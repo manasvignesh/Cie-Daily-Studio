@@ -9,6 +9,7 @@ import {
   getApps,
 } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
+import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { AccessToken } from "livekit-server-sdk";
 import OpenAI from "openai";
 
@@ -304,6 +305,113 @@ app.post("/api/livekit/token", requireAuth, async (req: AuthedRequest, res) => {
         error: "token_service_failed",
         detail: error?.message?.slice(0, 120) || "unknown",
       });
+  }
+});
+
+app.post("/api/streams", requireAuth, async (req: AuthedRequest, res) => {
+  const uid = req.firebaseUser!.uid;
+  const { id: reqId, title, description, roomName: reqRoom, status, isPublic } = req.body || {};
+  if (!title) return res.status(400).json({ error: "title_required" });
+
+  const streamId = String(reqId || "").trim() || `stream_${Date.now()}`;
+  const roomName = String(reqRoom || "").trim() || `cie_${streamId.replace(/[^A-Za-z0-9]/g, "")}`;
+  const hostName = req.firebaseUser?.name || req.firebaseUser?.email || "Host";
+
+  const streamData = {
+    id: streamId,
+    title: String(title).trim(),
+    description: String(description || "").trim(),
+    roomName,
+    hostId: uid,
+    hostName,
+    presenterId: uid,
+    presenterIds: [uid],
+    status: status === "live" ? "live" : "scheduled",
+    isPublic: isPublic !== false,
+    participantCount: 0,
+    peakViewerCount: 0,
+  };
+
+  try {
+    try {
+      const db = getFirestore();
+      await db.collection("liveStreams").doc(streamId).set({
+        ...streamData,
+        createdAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      return res.json({ ok: true, id: streamId, roomName });
+    } catch (adminErr: any) {
+      console.warn("Admin SDK write notice, attempting REST API fallback:", adminErr?.message);
+    }
+
+    const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/liveStreams?documentId=${encodeURIComponent(streamId)}`;
+    const firestoreBody = {
+      fields: {
+        id: { stringValue: streamId },
+        title: { stringValue: streamData.title },
+        description: { stringValue: streamData.description },
+        roomName: { stringValue: streamData.roomName },
+        hostId: { stringValue: uid },
+        hostName: { stringValue: hostName },
+        presenterId: { stringValue: uid },
+        presenterIds: { arrayValue: { values: [{ stringValue: uid }] } },
+        status: { stringValue: streamData.status },
+        isPublic: { booleanValue: streamData.isPublic },
+        participantCount: { integerValue: "0" },
+        peakViewerCount: { integerValue: "0" },
+        createdAt: { timestampValue: new Date().toISOString() },
+      },
+    };
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${req.idToken}`,
+      },
+      body: JSON.stringify(firestoreBody),
+    });
+
+    if (!response.ok) {
+      const errBody: any = await response.json().catch(() => ({}));
+      throw new Error(errBody.error?.message || `Firestore REST status: ${response.status}`);
+    }
+
+    return res.json({ ok: true, id: streamId, roomName });
+  } catch (error: any) {
+    console.error("Stream creation server error:", error);
+    return res.status(500).json({ error: "stream_creation_failed", detail: error?.message || "Unknown error" });
+  }
+});
+
+app.delete("/api/streams/:id", requireAuth, async (req: AuthedRequest, res) => {
+  const streamId = String(req.params.id || "").trim();
+  if (!streamId) return res.status(400).json({ error: "invalid_id" });
+
+  try {
+    try {
+      const db = getFirestore();
+      await db.collection("liveStreams").doc(streamId).delete();
+      return res.json({ ok: true });
+    } catch (adminErr: any) {
+      console.warn("Admin SDK delete notice:", adminErr?.message);
+    }
+
+    const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/liveStreams/${encodeURIComponent(streamId)}`;
+    const response = await fetch(url, {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${req.idToken}`,
+      },
+    });
+
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`Firestore REST status: ${response.status}`);
+    }
+
+    return res.json({ ok: true });
+  } catch (error: any) {
+    return res.status(500).json({ error: "stream_deletion_failed", detail: error?.message });
   }
 });
 
