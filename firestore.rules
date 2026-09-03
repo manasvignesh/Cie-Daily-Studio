@@ -1,0 +1,51 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Live Streams and Broadcasts
+    match /liveStreams/{streamId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+      
+      match /messages/{messageId} {
+        allow read: if true;
+        allow write: if request.auth != null;
+      }
+    }
+    
+    // Posts (Articles & Reels)
+    match /posts/{postId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+    
+    // Users profiles
+    match /users/{userId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+    
+    // Comments
+    match /comments/{commentId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+    
+    // Spaces & topic communities
+    match /spaces/{spaceId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+    
+    match /live_spaces/{spaceId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+    
+    // Allow any authenticated user full access across all studio collections
+    match /{document=**} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+  }
+}
