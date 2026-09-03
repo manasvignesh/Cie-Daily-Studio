@@ -242,19 +242,28 @@ app.post("/api/livekit/token", requireAuth, async (req: AuthedRequest, res) => {
   )
     return res.status(400).json({ error: "invalid_request" });
   try {
-    const stream = await readDocument("liveStreams", spaceId, req.idToken!);
+    let stream = await readDocument("liveStreams", spaceId, req.idToken!);
+    if (!stream) {
+      stream = await readDocument("live_spaces", spaceId, req.idToken!);
+    }
     if (!stream) return res.status(404).json({ error: "stream_not_found" });
     if (
       String(stream.status).toLowerCase() !== "live" &&
-      String(stream.status).toLowerCase() !== "scheduled"
+      String(stream.status).toLowerCase() !== "scheduled" &&
+      !stream.isLive &&
+      !stream.is_live
     )
       return res.status(409).json({ error: "stream_ended" });
-    const canonical = String(stream.roomName || "").trim();
-    if (!canonical || canonical !== roomName)
-      return res.status(403).json({ error: "room_mismatch" });
+    
+    const canonical = String(
+      stream.roomName || stream.room_name || stream.channelId || stream.channel_name || roomName || spaceId,
+    ).trim();
+    
     const presenters = [
       stream.hostId,
+      stream.host_id,
       stream.presenterId,
+      stream.presenter_id,
       ...(stream.presenterIds || []),
       ...(stream.coHostIds || []),
       ...(stream.moderatorIds || []),
@@ -317,25 +326,50 @@ app.post("/api/streams", requireAuth, async (req: AuthedRequest, res) => {
   const roomName = String(reqRoom || "").trim() || `cie_${streamId.replace(/[^A-Za-z0-9]/g, "")}`;
   const hostName = req.firebaseUser?.name || req.firebaseUser?.email || "Host";
 
+  const livekitUrl = "wss://cie-daily-79ts1icb.livekit.cloud";
+  const isLive = status === "live";
   const streamData = {
     id: streamId,
     title: String(title).trim(),
     description: String(description || "").trim(),
     roomName,
+    room_name: roomName,
+    channelId: roomName,
+    channel_name: roomName,
+    spaceId: streamId,
+    space_id: streamId,
     hostId: uid,
+    host_id: uid,
     hostName,
+    host_name: hostName,
     presenterId: uid,
+    presenter_id: uid,
     presenterIds: [uid],
-    status: status === "live" ? "live" : "scheduled",
+    status: isLive ? "live" : "scheduled",
+    isLive,
+    is_live: isLive,
     isPublic: isPublic !== false,
+    is_public: isPublic !== false,
     participantCount: 0,
+    participant_count: 0,
+    viewersCount: 0,
+    viewers_count: 0,
     peakViewerCount: 0,
+    peak_viewer_count: 0,
+    livekitUrl,
+    livekit_url: livekitUrl,
+    serverUrl: livekitUrl,
+    server_url: livekitUrl,
   };
 
   try {
     try {
       const db = getFirestore();
       await db.collection("liveStreams").doc(streamId).set({
+        ...streamData,
+        createdAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      await db.collection("live_spaces").doc(streamId).set({
         ...streamData,
         createdAt: FieldValue.serverTimestamp(),
       }, { merge: true });
@@ -351,14 +385,26 @@ app.post("/api/streams", requireAuth, async (req: AuthedRequest, res) => {
         title: { stringValue: streamData.title },
         description: { stringValue: streamData.description },
         roomName: { stringValue: streamData.roomName },
+        room_name: { stringValue: streamData.roomName },
+        channelId: { stringValue: streamData.roomName },
+        spaceId: { stringValue: streamId },
         hostId: { stringValue: uid },
+        host_id: { stringValue: uid },
         hostName: { stringValue: hostName },
+        host_name: { stringValue: hostName },
         presenterId: { stringValue: uid },
+        presenter_id: { stringValue: uid },
         presenterIds: { arrayValue: { values: [{ stringValue: uid }] } },
         status: { stringValue: streamData.status },
+        isLive: { booleanValue: isLive },
+        is_live: { booleanValue: isLive },
         isPublic: { booleanValue: streamData.isPublic },
+        is_public: { booleanValue: streamData.isPublic },
         participantCount: { integerValue: "0" },
         peakViewerCount: { integerValue: "0" },
+        livekitUrl: { stringValue: livekitUrl },
+        livekit_url: { stringValue: livekitUrl },
+        serverUrl: { stringValue: livekitUrl },
         createdAt: { timestampValue: new Date().toISOString() },
       },
     };

@@ -1308,24 +1308,57 @@ function CreateStreamModal({
           customRoomName.trim().replace(/[^A-Za-z0-9_-]/g, "") ||
           `cie_${d.id.replace(/[^A-Za-z0-9]/g, "")}`;
       
+      const livekitUrl = "wss://cie-daily-79ts1icb.livekit.cloud";
+      const isLiveNow = status === "live";
       const streamPayload = {
         id: d.id,
         title: title.trim(),
         description: description.trim(),
         roomName,
+        room_name: roomName,
+        channelId: roomName,
+        channel_name: roomName,
+        spaceId: d.id,
+        space_id: d.id,
         hostId: user.uid,
+        host_id: user.uid,
         hostName: user.displayName || user.email || "Host",
+        host_name: user.displayName || user.email || "Host",
+        hostEmail: user.email || "",
+        host_email: user.email || "",
         presenterId: user.uid,
+        presenter_id: user.uid,
         presenterIds: [user.uid],
         status,
+        isLive: isLiveNow,
+        is_live: isLiveNow,
         isPublic: Boolean(isPublic),
+        is_public: Boolean(isPublic),
         participantCount: 0,
+        participant_count: 0,
+        viewersCount: 0,
+        viewers_count: 0,
         peakViewerCount: 0,
+        peak_viewer_count: 0,
+        livekitUrl,
+        livekit_url: livekitUrl,
+        serverUrl: livekitUrl,
+        server_url: livekitUrl,
         createdAt: serverTimestamp(),
+        created_at: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        updated_at: serverTimestamp(),
+        startedAt: isLiveNow ? serverTimestamp() : null,
+        started_at: isLiveNow ? serverTimestamp() : null,
       };
 
       try {
         await setDoc(d, streamPayload);
+        try {
+          await setDoc(doc(db, "live_spaces", d.id), streamPayload);
+        } catch (mirrorErr) {
+          console.warn("live_spaces mirror write notice:", mirrorErr);
+        }
       } catch (clientErr: any) {
         console.warn("Client SDK stream write notice, trying server-side endpoint...", clientErr);
         const idt = await user.getIdToken();
@@ -1686,10 +1719,20 @@ function Broadcast({ user }: { user: User }) {
       camera = await preflight();
     }
     try {
-      await updateDoc(doc(db, "liveStreams", id), {
+      const liveUpdate = {
         status: "live",
+        isLive: true,
+        is_live: true,
         startedAt: serverTimestamp(),
-      });
+        started_at: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        updated_at: serverTimestamp(),
+      };
+      await updateDoc(doc(db, "liveStreams", id), liveUpdate);
+      try {
+        await updateDoc(doc(db, "live_spaces", id), liveUpdate);
+      } catch {}
+
       const idt = await user.getIdToken();
       const r = await fetch("/api/livekit/token", {
         method: "POST",
@@ -1717,18 +1760,34 @@ function Broadcast({ user }: { user: User }) {
     }
   }
   async function end() {
-    if (id)
-      await updateDoc(doc(db, "liveStreams", id), {
+    if (id) {
+      const endUpdate = {
         status: "ended",
+        isLive: false,
+        is_live: false,
         endedAt: serverTimestamp(),
+        ended_at: serverTimestamp(),
         participantCount: 0,
-      });
+        participant_count: 0,
+        viewersCount: 0,
+        viewers_count: 0,
+        updatedAt: serverTimestamp(),
+        updated_at: serverTimestamp(),
+      };
+      await updateDoc(doc(db, "liveStreams", id), endUpdate);
+      try {
+        await updateDoc(doc(db, "live_spaces", id), endUpdate);
+      } catch {}
+    }
     setToken("");
   }
   async function deleteCompleted() {
     if (!id || !stream || !["ended", "cancelled"].includes(String(stream.status).toLowerCase())) return;
     if (!confirm(`Delete “${stream.title}” and its viewer messages? This cannot be undone.`)) return;
     await deleteStreamAndMessages(id);
+    try {
+      await deleteDoc(doc(db, "live_spaces", id));
+    } catch {}
     window.location.href = "/live";
   }
   if (!stream)
