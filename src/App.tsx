@@ -1313,6 +1313,7 @@ function CreateStreamModal({
       const streamPayload = {
         id: d.id,
         title: title.trim(),
+        name: title.trim(),
         description: description.trim(),
         roomName,
         room_name: roomName,
@@ -1329,15 +1330,21 @@ function CreateStreamModal({
         presenterId: user.uid,
         presenter_id: user.uid,
         presenterIds: [user.uid],
-        status,
+        status: isLiveNow ? "live" : "scheduled",
         isLive: isLiveNow,
         is_live: isLiveNow,
+        isActive: isLiveNow,
+        is_active: isLiveNow,
+        state: isLiveNow ? "live" : "scheduled",
+        spaceStatus: isLiveNow ? "live" : "scheduled",
         isPublic: Boolean(isPublic),
         is_public: Boolean(isPublic),
         participantCount: 0,
         participant_count: 0,
         viewersCount: 0,
         viewers_count: 0,
+        memberCount: 0,
+        member_count: 0,
         peakViewerCount: 0,
         peak_viewer_count: 0,
         livekitUrl,
@@ -1358,6 +1365,11 @@ function CreateStreamModal({
           await setDoc(doc(db, "live_spaces", d.id), streamPayload);
         } catch (mirrorErr) {
           console.warn("live_spaces mirror write notice:", mirrorErr);
+        }
+        try {
+          await setDoc(doc(db, "spaces", d.id), streamPayload);
+        } catch (mirrorErr) {
+          console.warn("spaces mirror write notice:", mirrorErr);
         }
       } catch (clientErr: any) {
         console.warn("Client SDK stream write notice, trying server-side endpoint...", clientErr);
@@ -1723,6 +1735,10 @@ function Broadcast({ user }: { user: User }) {
         status: "live",
         isLive: true,
         is_live: true,
+        isActive: true,
+        is_active: true,
+        state: "live",
+        spaceStatus: "live",
         startedAt: serverTimestamp(),
         started_at: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -1731,6 +1747,9 @@ function Broadcast({ user }: { user: User }) {
       await updateDoc(doc(db, "liveStreams", id), liveUpdate);
       try {
         await updateDoc(doc(db, "live_spaces", id), liveUpdate);
+      } catch {}
+      try {
+        await updateDoc(doc(db, "spaces", id), liveUpdate);
       } catch {}
 
       const idt = await user.getIdToken();
@@ -1765,6 +1784,10 @@ function Broadcast({ user }: { user: User }) {
         status: "ended",
         isLive: false,
         is_live: false,
+        isActive: false,
+        is_active: false,
+        state: "ended",
+        spaceStatus: "ended",
         endedAt: serverTimestamp(),
         ended_at: serverTimestamp(),
         participantCount: 0,
@@ -1778,6 +1801,9 @@ function Broadcast({ user }: { user: User }) {
       try {
         await updateDoc(doc(db, "live_spaces", id), endUpdate);
       } catch {}
+      try {
+        await updateDoc(doc(db, "spaces", id), endUpdate);
+      } catch {}
     }
     setToken("");
   }
@@ -1787,6 +1813,9 @@ function Broadcast({ user }: { user: User }) {
     await deleteStreamAndMessages(id);
     try {
       await deleteDoc(doc(db, "live_spaces", id));
+    } catch {}
+    try {
+      await deleteDoc(doc(db, "spaces", id));
     } catch {}
     window.location.href = "/live";
   }
