@@ -135,7 +135,7 @@ function useAuth() {
           try {
             const userRef = doc(db, "users", u.uid);
             const s = await getDoc(userRef);
-            if (!s.exists() || !s.data()?.role) {
+            if (!s.exists() || s.data()?.role !== "admin") {
               await setDoc(
                 userRef,
                 {
