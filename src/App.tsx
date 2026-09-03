@@ -27,6 +27,7 @@ import {
   orderBy,
   query,
   serverTimestamp,
+  setDoc,
   updateDoc,
   where,
   writeBatch,
@@ -1255,32 +1256,156 @@ function ReelModal({ close }: { close: () => void }) {
   );
 }
 
+function CreateStreamModal({
+  user,
+  close,
+}: {
+  user: User;
+  close: () => void;
+}) {
+  const navg = useNavigate(),
+    [title, setTitle] = useState(""),
+    [description, setDescription] = useState(""),
+    [customRoomName, setCustomRoomName] = useState(""),
+    [status, setStatus] = useState<"scheduled" | "live">("scheduled"),
+    [isPublic, setIsPublic] = useState(true),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    if (!title.trim()) return;
+    try {
+      setBusy(true);
+      setError("");
+      const d = doc(collection(db, "liveStreams")),
+        roomName =
+          customRoomName.trim().replace(/[^A-Za-z0-9_-]/g, "") ||
+          `cie_${d.id.replace(/[^A-Za-z0-9]/g, "")}`;
+      await setDoc(d, {
+        id: d.id,
+        title: title.trim(),
+        description: description.trim(),
+        roomName,
+        hostId: user.uid,
+        hostName: user.displayName || user.email || "Host",
+        presenterId: user.uid,
+        presenterIds: [user.uid],
+        status,
+        isPublic,
+        participantCount: 0,
+        peakViewerCount: 0,
+        createdAt: serverTimestamp(),
+      });
+      close();
+      navg(`/live/${d.id}`);
+    } catch (err: any) {
+      console.error("Create stream failed:", err);
+      setError(err?.message || "Failed to create stream");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="overlay" onMouseDown={close}>
+      <form
+        className="modal"
+        onSubmit={save}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <button type="button" className="close" onClick={close}>
+          <X />
+        </button>
+        <h2>Create Broadcast Stream</h2>
+        {error && (
+          <div className="error" style={{ marginBottom: 14 }}>
+            <CircleAlert size={16} />
+            {error}
+          </div>
+        )}
+        <label>
+          Broadcast title
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="e.g. Evening Tech Briefing"
+            required
+            autoFocus
+          />
+        </label>
+        <label>
+          Description (optional)
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="What is this live broadcast about?"
+            style={{ minHeight: 70 }}
+          />
+        </label>
+        <label>
+          Room Name Identifier (optional)
+          <input
+            value={customRoomName}
+            onChange={(e) => setCustomRoomName(e.target.value)}
+            placeholder="Leave blank for auto-generated cie_ room ID"
+          />
+        </label>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <label>
+            Initial Status
+            <select
+              value={status}
+              onChange={(e) => setStatus(e.target.value as "scheduled" | "live")}
+            >
+              <option value="scheduled">Scheduled</option>
+              <option value="live">Live now</option>
+            </select>
+          </label>
+          <label>
+            Visibility
+            <select
+              value={isPublic ? "public" : "private"}
+              onChange={(e) => setIsPublic(e.target.value === "public")}
+            >
+              <option value="public">Public (all viewers)</option>
+              <option value="private">Restricted</option>
+            </select>
+          </label>
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+          <button
+            type="button"
+            className="ghost"
+            style={{ flex: 1 }}
+            onClick={close}
+            disabled={busy}
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            className="primary"
+            style={{ flex: 2 }}
+            disabled={busy || !title.trim()}
+          >
+            <Radio size={16} />
+            {busy ? "Creating…" : "Create & Launch Control Room"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function LiveHome({ user }: { user: User }) {
   const navg = useNavigate(),
+    [modalOpen, setModalOpen] = useState(false),
     { data } = useLiveCollection<LiveStream>("liveStreams", [
       orderBy("createdAt", "desc"),
       limit(40),
     ]);
-  async function create() {
-    const title = prompt("Broadcast title");
-    if (!title) return;
-    const d = doc(collection(db, "liveStreams")),
-      roomName = `cie_${d.id.replace(/[^A-Za-z0-9]/g, "")}`;
-    await updateDocSafe(d, {
-      title,
-      description: "",
-      roomName,
-      hostId: user.uid,
-      hostName: user.displayName || user.email || "Host",
-      presenterId: user.uid,
-      status: "scheduled",
-      isPublic: true,
-      participantCount: 0,
-      peakViewerCount: 0,
-      createdAt: serverTimestamp(),
-    });
-    navg(`/live/${d.id}`);
-  }
+
   async function removeCompleted(stream: LiveStream) {
     if (!["ended", "cancelled"].includes(String(stream.status).toLowerCase())) return;
     if (!confirm(`Delete “${stream.title}” and its viewer messages? This cannot be undone.`)) return;
@@ -1293,7 +1418,7 @@ function LiveHome({ user }: { user: User }) {
         title="Live Studio"
         desc="Canonical room names, verified tokens and stage-specific diagnostics."
         action={
-          <button className="primary livebtn" onClick={create}>
+          <button className="primary livebtn" onClick={() => setModalOpen(true)}>
             <Radio />
             Create stream
           </button>
@@ -1352,6 +1477,9 @@ function LiveHome({ user }: { user: User }) {
           </button>
         ))}
       </section>
+      {modalOpen && (
+        <CreateStreamModal user={user} close={() => setModalOpen(false)} />
+      )}
     </>
   );
 }
@@ -1382,7 +1510,8 @@ function Broadcast({ user }: { user: User }) {
     [token, setToken] = useState(""),
     [serverUrl, setServerUrl] = useState(""),
     [error, setError] = useState(""),
-    [selectedCamera, setSelectedCamera] = useState<MediaDeviceInfo | null>(null),
+    [availableCameras, setAvailableCameras] = useState<MediaDeviceInfo[]>([]);
+  const [selectedCamera, setSelectedCamera] = useState<MediaDeviceInfo | null>(null),
     [previewStream, setPreviewStream] = useState<MediaStream | null>(null),
     [liveMessages, setLiveMessages] = useState<any[]>([]);
   const previewRef = useRef<HTMLVideoElement>(null);
@@ -1417,15 +1546,12 @@ function Broadcast({ user }: { user: User }) {
   function cameraScore(device: MediaDeviceInfo) {
     const label = device.label.toLowerCase();
     let score = 0;
-    if (/(integrated|built.?in|internal|facetime|front|laptop|hd webcam)/.test(label)) score += 100;
-    if (/(phone|link to windows|droidcam|iriun|epoccam|obs|virtual|external|capture card)/.test(label)) score -= 200;
+    if (/(integrated|built.?in|internal|facetime|front|laptop|hd webcam|camera|webcam|video)/.test(label)) score += 100;
+    if (/(phone|link to windows|droidcam|iriun|epoccam)/.test(label)) score -= 20;
     return score;
   }
-  function isExternalCamera(device: MediaDeviceInfo) {
-    return /(phone|link to windows|droidcam|iriun|epoccam|obs|virtual|external|capture card|bluetooth)/i.test(device.label);
-  }
 
-  async function preflight(): Promise<MediaDeviceInfo | null> {
+  async function preflight(preferredDeviceId?: string): Promise<MediaDeviceInfo | null> {
     const c: any = {
       auth: user ? "pass" : "fail",
       network: navigator.onLine ? "pass" : "fail",
@@ -1438,28 +1564,26 @@ function Broadcast({ user }: { user: User }) {
     setChecks({ ...c });
     let chosenCamera: MediaDeviceInfo | null = null;
     try {
-      // Request video independently so a Bluetooth microphone/headset cannot
-      // become the selected camera through the combined device picker.
+      // Request video permissions
       const permissionStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "user" } },
+        video: true,
       });
       permissionStream.getTracks().forEach((track) => track.stop());
       const devices = await navigator.mediaDevices.enumerateDevices();
-      const cameras = devices
-        .filter((device) => device.kind === "videoinput")
-        .sort((a, b) => cameraScore(b) - cameraScore(a));
-      chosenCamera =
-        cameras.find((device) => !isExternalCamera(device) && cameraScore(device) > 0) ||
-        cameras.find((device) => !isExternalCamera(device)) ||
-        null;
-      if (!chosenCamera) throw new Error("No built-in laptop camera found. Connect or enable the laptop webcam.");
+      const cameras = devices.filter((device) => device.kind === "videoinput");
+      if (cameras.length === 0) {
+        throw new Error("No video camera found. Please connect a webcam or enable camera permissions.");
+      }
+      setAvailableCameras(cameras);
+      cameras.sort((a, b) => cameraScore(b) - cameraScore(a));
+      
+      const targetDeviceId = preferredDeviceId || selectedCamera?.deviceId;
+      chosenCamera = cameras.find((d) => d.deviceId === targetDeviceId) || cameras[0];
+
       const exactStream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          deviceId: { exact: chosenCamera.deviceId },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          facingMode: { ideal: "user" },
-        },
+        video: chosenCamera.deviceId
+          ? { deviceId: { exact: chosenCamera.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+          : true,
       });
       setPreviewStream((prior) => {
         prior?.getTracks().forEach((track) => track.stop());
@@ -1477,7 +1601,7 @@ function Broadcast({ user }: { user: User }) {
     } catch (cameraError) {
       c.camera = "fail";
       c.microphone = "fail";
-      setError(`Camera preflight failed: ${cameraError instanceof Error ? cameraError.message : "permission or device error"}`);
+      setError(`Camera preflight: ${cameraError instanceof Error ? cameraError.message : "permission or device error"}`);
     }
     try {
       const h = await fetch("/api/health").then((r) => r.json());
@@ -1493,8 +1617,10 @@ function Broadcast({ user }: { user: User }) {
   async function start() {
     if (!stream || !id) return;
     setError("");
-    const camera = await preflight();
-    if (!camera) return;
+    let camera = selectedCamera;
+    if (!camera) {
+      camera = await preflight();
+    }
     try {
       await updateDoc(doc(db, "liveStreams", id), {
         status: "live",
@@ -1510,14 +1636,19 @@ function Broadcast({ user }: { user: User }) {
         body: JSON.stringify({ spaceId: id, roomName: stream.roomName }),
       });
       const j = await r.json();
-      if (!r.ok) throw new Error(j.error);
+      if (!r.ok) {
+        if (j.error === "livekit_not_configured") {
+          throw new Error("LiveKit credentials (LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL) are not set in the server .env configuration.");
+        }
+        throw new Error(j.detail || j.error || "Token request failed");
+      }
       previewStream?.getTracks().forEach((track) => track.stop());
       setPreviewStream(null);
       setToken(j.token);
       setServerUrl(j.serverUrl);
     } catch (e: any) {
       setError(
-        `Startup failed at ${e.message.includes("token") ? "token service" : "broadcast setup"}: ${e.message}`,
+        `Startup failed: ${e.message}`,
       );
     }
   }
@@ -1589,11 +1720,33 @@ function Broadcast({ user }: { user: User }) {
                 </div>
               )}
               <div className="previewControls">
-                {selectedCamera && <span>CAM · {selectedCamera.label || "Built-in laptop camera"}</span>}
+                {availableCameras.length > 1 ? (
+                  <select
+                    style={{
+                      maxWidth: 220,
+                      background: "#111",
+                      color: "#fff",
+                      border: "1px solid #333",
+                      padding: "4px 8px",
+                      borderRadius: 4,
+                      fontSize: 12,
+                    }}
+                    value={selectedCamera?.deviceId || ""}
+                    onChange={(e) => void preflight(e.target.value)}
+                  >
+                    {availableCameras.map((cam, idx) => (
+                      <option key={cam.deviceId || idx} value={cam.deviceId}>
+                        {cam.label || `Camera ${idx + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                ) : selectedCamera ? (
+                  <span>CAM · {selectedCamera.label || "Connected Camera"}</span>
+                ) : null}
                 <div className="broadcastActions">
-                  <button onClick={preflight}>Run preflight</button>
+                  <button type="button" onClick={() => void preflight()}>Run preflight</button>
                   {stream.status !== "ended" && (
-                    <button className="primary" onClick={start}>
+                    <button type="button" className="primary" onClick={start}>
                       <Radio />
                       Start live
                     </button>
