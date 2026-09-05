@@ -4,7 +4,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   initializeApp,
-  applicationDefault,
   cert,
   getApps,
 } from "firebase-admin/app";
@@ -22,7 +21,7 @@ if (!getApps().length) {
   initializeApp(
     raw
       ? { credential: cert(JSON.parse(raw)), projectId }
-      : { credential: applicationDefault(), projectId },
+      : { projectId },
   );
 }
 const app = express();
@@ -247,17 +246,11 @@ app.post("/api/livekit/token", requireAuth, async (req: AuthedRequest, res) => {
       stream = await readDocument("live_spaces", spaceId, req.idToken!);
     }
     if (!stream) return res.status(404).json({ error: "stream_not_found" });
-    if (
-      String(stream.status).toLowerCase() !== "live" &&
-      String(stream.status).toLowerCase() !== "scheduled" &&
-      !stream.isLive &&
-      !stream.is_live
-    )
-      return res.status(409).json({ error: "stream_ended" });
-    
     const canonical = String(
-      stream.roomName || stream.room_name || stream.channelId || stream.channel_name || roomName || spaceId,
+      stream.roomName || stream.room_name || stream.channelId || stream.channel_name || "",
     ).trim();
+    if (!canonical || canonical !== roomName)
+      return res.status(403).json({ error: "room_mismatch" });
     
     const presenters = [
       stream.hostId,
@@ -269,6 +262,11 @@ app.post("/api/livekit/token", requireAuth, async (req: AuthedRequest, res) => {
       ...(stream.moderatorIds || []),
     ];
     const canPublish = presenters.includes(uid);
+    const status = String(stream.status || "").toLowerCase();
+    // Presenters must connect and publish before advertising a live stream.
+    if (stream.endedAt || stream.ended_at ||
+        (status !== "live" && !(canPublish && status === "scheduled")))
+      return res.status(409).json({ error: "stream_ended" });
     if (
       stream.isPublic === false &&
       !canPublish &&
@@ -317,7 +315,7 @@ app.post("/api/livekit/token", requireAuth, async (req: AuthedRequest, res) => {
   }
 });
 
-app.post("/api/streams", requireAuth, async (req: AuthedRequest, res) => {
+app.post("/api/streams", requireAuth, requireStaff, async (req: AuthedRequest, res) => {
   const uid = req.firebaseUser!.uid;
   const { id: reqId, title, description, roomName: reqRoom, status, isPublic } = req.body || {};
   if (!title) return res.status(400).json({ error: "title_required" });
@@ -327,7 +325,7 @@ app.post("/api/streams", requireAuth, async (req: AuthedRequest, res) => {
   const hostName = req.firebaseUser?.name || req.firebaseUser?.email || "Host";
 
   const livekitUrl = "wss://cie-daily-79ts1icb.livekit.cloud";
-  const isLive = status === "live";
+  const isLive = false; // Never advertise an unconnected presenter as live.
   const streamData = {
     id: streamId,
     title: String(title).trim(),
@@ -365,6 +363,9 @@ app.post("/api/streams", requireAuth, async (req: AuthedRequest, res) => {
   try {
     try {
       const db = getFirestore();
+      const existing = await db.collection("liveStreams").doc(streamId).get();
+      if (existing.exists && existing.data()?.hostId !== uid)
+        return res.status(403).json({ error: "not_authorized" });
       await db.collection("liveStreams").doc(streamId).set({
         ...streamData,
         createdAt: FieldValue.serverTimestamp(),
@@ -430,13 +431,16 @@ app.post("/api/streams", requireAuth, async (req: AuthedRequest, res) => {
   }
 });
 
-app.delete("/api/streams/:id", requireAuth, async (req: AuthedRequest, res) => {
+app.delete("/api/streams/:id", requireAuth, requireStaff, async (req: AuthedRequest, res) => {
   const streamId = String(req.params.id || "").trim();
   if (!streamId) return res.status(400).json({ error: "invalid_id" });
 
   try {
     try {
       const db = getFirestore();
+      const existing = await db.collection("liveStreams").doc(streamId).get();
+      if (existing.exists && existing.data()?.hostId !== req.firebaseUser!.uid)
+        return res.status(403).json({ error: "not_authorized" });
       await db.collection("liveStreams").doc(streamId).delete();
       return res.json({ ok: true });
     } catch (adminErr: any) {
@@ -461,7 +465,19 @@ app.delete("/api/streams/:id", requireAuth, async (req: AuthedRequest, res) => {
   }
 });
 
+// Keep API failures machine-readable. Without this guard, the SPA fallback can
+// return HTML for a mistyped or unavailable API route and obscure the real error.
+app.use("/api", (req, res) =>
+  res.status(404).json({
+    error: "api_route_not_found",
+    detail: `${req.method} ${req.originalUrl}`,
+  }),
+);
+
 const port = Number(process.env.STUDIO_PORT || 3100);
+export default app;
+
+async function startServer() {
 if (process.env.NODE_ENV === "production") {
   const root = path.dirname(fileURLToPath(import.meta.url));
   app.use(
@@ -495,3 +511,7 @@ if (process.env.NODE_ENV === "production") {
   );
   developmentServer.on("error", (error) => console.error("Studio server error", error));
 }
+}
+
+// Vercel invokes the exported Express handler; it must not start Vite or listen.
+if (!process.env.VERCEL) void startServer();

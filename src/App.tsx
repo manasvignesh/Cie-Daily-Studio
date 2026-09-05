@@ -76,6 +76,7 @@ import {
   Zap,
 } from "lucide-react";
 import { auth, db, storage } from "./lib/firebase";
+import { Room } from "livekit-client";
 import {
   emptyFullArticle,
   emptyQuickBrief,
@@ -83,6 +84,24 @@ import {
   validateArticle,
 } from "./lib/article-contract";
 import type { Article, LiveStream, StudioUser } from "./lib/types";
+
+async function readApiJson(response: Response) {
+  const text = await response.text();
+  if (!text) {
+    if (!response.ok) {
+      throw new Error(`Backend returned HTTP ${response.status} ${response.statusText}`.trim());
+    }
+    return {};
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    const summary = text.replace(/\s+/g, " ").trim().slice(0, 140);
+    throw new Error(
+      `Backend returned HTTP ${response.status} instead of JSON${summary ? `: ${summary}` : ""}`,
+    );
+  }
+}
 
 const nav = [
   ["Overview", "/", LayoutDashboard],
@@ -1309,7 +1328,8 @@ function CreateStreamModal({
           `cie_${d.id.replace(/[^A-Za-z0-9]/g, "")}`;
       
       const livekitUrl = "wss://cie-daily-79ts1icb.livekit.cloud";
-      const isLiveNow = status === "live";
+      // Creation only reserves the room. Start live publishes the tracks first.
+      const isLiveNow = false;
       const streamPayload = {
         id: d.id,
         title: title.trim(),
@@ -1385,7 +1405,7 @@ function CreateStreamModal({
             title: title.trim(),
             description: description.trim(),
             roomName,
-            status,
+            status: "scheduled",
             isPublic: Boolean(isPublic),
           }),
         });
@@ -1457,7 +1477,7 @@ function CreateStreamModal({
               onChange={(e) => setStatus(e.target.value as "scheduled" | "live")}
             >
               <option value="scheduled">Scheduled</option>
-              <option value="live">Live now</option>
+              <option value="live">Prepare to go live</option>
             </select>
           </label>
           <label>
@@ -1624,6 +1644,11 @@ function Broadcast({ user }: { user: User }) {
     [previewStream, setPreviewStream] = useState<MediaStream | null>(null),
     [liveMessages, setLiveMessages] = useState<any[]>([]);
   const previewRef = useRef<HTMLVideoElement>(null);
+  const previewMedia = useRef<MediaStream | null>(null);
+  const broadcastRoom = useRef<Room | null>(null);
+  const startingRef = useRef(false);
+  const [starting, setStarting] = useState(false);
+  useEffect(() => () => { void broadcastRoom.current?.disconnect(); }, []);
   useEffect(
     () =>
       id
@@ -1694,6 +1719,8 @@ function Broadcast({ user }: { user: User }) {
           ? { deviceId: { exact: chosenCamera.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
           : true,
       });
+      previewMedia.current?.getTracks().forEach((track) => track.stop());
+      previewMedia.current = exactStream;
       setPreviewStream((prior) => {
         prior?.getTracks().forEach((track) => track.stop());
         return exactStream;
@@ -1713,7 +1740,7 @@ function Broadcast({ user }: { user: User }) {
       setError(`Camera preflight: ${cameraError instanceof Error ? cameraError.message : "permission or device error"}`);
     }
     try {
-      const h = await fetch("/api/health").then((r) => r.json());
+      const h = await fetch("/api/health").then(readApiJson);
       c.backend = h.ok ? "pass" : "fail";
       c.livekit = h.livekit?.configured ? "pass" : "fail";
     } catch {
@@ -1724,13 +1751,17 @@ function Broadcast({ user }: { user: User }) {
     return chosenCamera;
   }
   async function start() {
-    if (!stream || !id) return;
+    if (!stream || !id || startingRef.current || token) return;
+    startingRef.current = true;
+    setStarting(true);
     setError("");
+    let room: Room | null = null;
+    try {
     let camera = selectedCamera;
     if (!camera) {
       camera = await preflight();
     }
-    try {
+      if (!camera) throw new Error("Choose an available camera before going live.");
       const liveUpdate = {
         status: "live",
         isLive: true,
@@ -1744,14 +1775,6 @@ function Broadcast({ user }: { user: User }) {
         updatedAt: serverTimestamp(),
         updated_at: serverTimestamp(),
       };
-      await updateDoc(doc(db, "liveStreams", id), liveUpdate);
-      try {
-        await updateDoc(doc(db, "live_spaces", id), liveUpdate);
-      } catch {}
-      try {
-        await updateDoc(doc(db, "spaces", id), liveUpdate);
-      } catch {}
-
       const idt = await user.getIdToken();
       const r = await fetch("/api/livekit/token", {
         method: "POST",
@@ -1761,24 +1784,51 @@ function Broadcast({ user }: { user: User }) {
         },
         body: JSON.stringify({ spaceId: id, roomName: stream.roomName }),
       });
-      const j = await r.json();
+      const j = await readApiJson(r);
       if (!r.ok) {
         if (j.error === "livekit_not_configured") {
           throw new Error("LiveKit credentials (LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL) are not set in the server .env configuration.");
         }
         throw new Error(j.detail || j.error || "Token request failed");
       }
-      previewStream?.getTracks().forEach((track) => track.stop());
+      previewMedia.current?.getTracks().forEach((track) => track.stop());
+      previewMedia.current = null;
       setPreviewStream(null);
+      if (!j.token || !j.serverUrl || j.roomName !== stream.roomName || j.role !== "presenter") {
+        throw new Error("The server did not authorize this room for broadcasting.");
+      }
+      room = new Room();
+      broadcastRoom.current = room;
+      await room.connect(j.serverUrl, j.token);
+      await room.localParticipant.setCameraEnabled(true, { deviceId: camera.deviceId });
+      await room.localParticipant.setMicrophoneEnabled(true);
+      // A local camera preview is not a broadcast. Announce live only after
+      // both tracks have successfully published to the requested room.
+      await updateDoc(doc(db, "liveStreams", id), liveUpdate);
+      for (const collectionName of ["live_spaces", "spaces"]) {
+        const reference = doc(db, collectionName, id);
+        try {
+          const existing = await getDoc(reference);
+          if (existing.exists()) await updateDoc(reference, liveUpdate);
+        } catch { /* Legacy mirrors must not prevent the canonical broadcast. */ }
+      }
+      setChecks((previous) => ({ ...previous, backend: "pass", livekit: "pass" }));
       setToken(j.token);
       setServerUrl(j.serverUrl);
     } catch (e: any) {
+      await room?.disconnect();
+      broadcastRoom.current = null;
       setError(
         `Startup failed: ${e.message}`,
       );
+    } finally {
+      startingRef.current = false;
+      setStarting(false);
     }
   }
   async function end() {
+    await broadcastRoom.current?.disconnect();
+    broadcastRoom.current = null;
     if (id) {
       const endUpdate = {
         status: "ended",
@@ -1844,15 +1894,17 @@ function Broadcast({ user }: { user: User }) {
         <section className="program">
           {token ? (
             <LiveKitRoom
+              room={broadcastRoom.current ?? undefined}
               token={token}
               serverUrl={serverUrl}
               connect
-              audio
-              video={
-                selectedCamera
-                  ? { deviceId: selectedCamera.deviceId }
-                  : true
-              }
+              audio={false}
+              video={false}
+              onDisconnected={() => {
+                setToken("");
+                setError("Broadcast disconnected. Start a new stream to reconnect.");
+                void end().catch(() => setError("Broadcast disconnected. Please end the stream record manually."));
+              }}
               onError={(e) =>
                 setError(`LiveKit connection failed: ${e.message}`)
               }
@@ -1896,11 +1948,11 @@ function Broadcast({ user }: { user: User }) {
                   <span>CAM · {selectedCamera.label || "Connected Camera"}</span>
                 ) : null}
                 <div className="broadcastActions">
-                  <button type="button" onClick={() => void preflight()}>Run preflight</button>
+                  <button type="button" disabled={starting} onClick={() => void preflight()}>Run preflight</button>
                   {stream.status !== "ended" && (
-                    <button type="button" className="primary" onClick={start}>
+                    <button type="button" className="primary" disabled={starting} onClick={start}>
                       <Radio />
-                      Start live
+                      {starting ? "Connecting…" : "Start live"}
                     </button>
                   )}
                 </div>
