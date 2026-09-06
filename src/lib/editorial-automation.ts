@@ -25,6 +25,12 @@ export type IngestStory = {
   imageUrl?: string;
 };
 
+export function firestoreSafeIngestStory(story: IngestStory): IngestStory {
+  return Object.fromEntries(
+    Object.entries(story).filter(([, value]) => value !== undefined),
+  ) as IngestStory;
+}
+
 export type DuplicateInfo = {
   kind: 'exact' | 'likely';
   matchedQueueId: string;

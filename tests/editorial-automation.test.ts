@@ -5,6 +5,7 @@ import {
   EditorialError,
   EditorialService,
   classifyEditorialFailure,
+  firestoreSafeIngestStory,
   safeEditorialFailureMessage,
   type EditorialQueueItem,
   type EditorialStore,
@@ -18,6 +19,12 @@ test('classifies editorial failures without exposing provider details', () => {
   assert.equal(classifyEditorialFailure(new Error('Firestore permission-denied')), 'firebase_write_failed');
   assert.equal(classifyEditorialFailure(Object.assign(new Error('deadline exceeded'), { code: 504 })), 'timeout');
   assert.equal(safeEditorialFailureMessage('firebase_write_failed'), 'The editorial queue could not be saved.');
+});
+
+test('removes undefined optional fields before Firestore serialization', () => {
+  const safe = firestoreSafeIngestStory({ ...story, imageUrl: undefined, location: undefined });
+  assert.equal('imageUrl' in safe, false);
+  assert.equal('location' in safe, false);
 });
 
 const story: IngestStory = {
