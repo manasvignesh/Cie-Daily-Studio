@@ -53,12 +53,10 @@ publishing capability.
 If the scheduler should submit through GitHub instead, use the labeled-issue
 bridge documented in [GITHUB_EDITORIAL_BRIDGE.md](./GITHUB_EDITORIAL_BRIDGE.md).
 
-For provider resilience, configure `NVIDIA_API_KEY` and optionally
-`NVIDIA_API_KEY_2` / `NVIDIA_API_KEY_3` as server-only variables. The server
-uses a fallback credential only for authentication, rate-limit, connection,
-timeout, or upstream NVIDIA failures. Never expose these values through a
-`VITE_*` variable.
-
-`GEMINI_API_KEY` optionally enables a final cross-provider fallback through
-Google's OpenAI-compatible endpoint. Configure `GEMINI_MODEL` only when you
-need to override the stable `gemini-2.5-flash` default.
+For provider resilience, configure `GEMINI_API_KEY` (and optionally
+`GEMINI_API_KEY_2`) as server-only variables. Gemini is tried first for every
+article. NVIDIA remains the fallback through `NVIDIA_API_KEY`,
+`NVIDIA_API_KEY_2`, `NVIDIA_API_KEY_3`, or `NVIDIA_API_KEYS` when Gemini times
+out, is unavailable, rate-limited, returns invalid JSON, or fails schema
+validation. Configure `GEMINI_MODEL` only when you need to override the stable
+`gemini-2.5-flash` default. Never expose provider keys through `VITE_*`.

@@ -190,12 +190,13 @@ app.get("/api/health", async (_req, res) => {
     firebase: { projectId, adminReady: firebaseReady },
     ai: {
       configured: nvidiaApiKeys().length > 0 || geminiApiKeys().length > 0,
-      editorialProvider: nvidiaApiKeys().length
-        ? "nvidia"
-        : geminiApiKeys().length
-          ? "gemini"
+      editorialProvider: geminiApiKeys().length
+        ? "gemini"
+        : nvidiaApiKeys().length
+          ? "nvidia"
           : "not_configured",
-      fallbackConfigured: nvidiaApiKeys().length > 1 || geminiApiKeys().length > 0,
+      fallbackConfigured: geminiApiKeys().length > 0 && nvidiaApiKeys().length > 0 ||
+        geminiApiKeys().length > 1 || nvidiaApiKeys().length > 1,
     },
     livekit: {
       configured: !!(
@@ -233,7 +234,7 @@ function canTryAnotherNvidiaKey(error: unknown) {
   return status === 400 || status === 401 || status === 403 || status === 404 ||
     status === 408 || status === 429 || status >= 500 ||
     /timeout|connection|rate_limit/.test(code) ||
-    /empty_ai_response|invalid_generated_json|generated_schema_missing/.test(message);
+    /empty_ai_response|invalid_generated_json|generated_schema_missing|generated_schema_validation_failed/.test(message);
 }
 
 function parseGeneratedArticle(raw: string) {
@@ -289,17 +290,17 @@ async function generateArticle(
   validationFeedback: string[] = [],
 ) {
   const providers = [
-    ...nvidiaApiKeys().map((apiKey) => ({
-      name: "nvidia",
-      apiKey,
-      baseURL: process.env.AI_BASE_URL || "https://integrate.api.nvidia.com/v1",
-      model: process.env.AI_MODEL || "meta/muse-glimmer-30b",
-    })),
     ...geminiApiKeys().map((apiKey) => ({
       name: "gemini",
       apiKey,
       baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
       model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+    })),
+    ...nvidiaApiKeys().map((apiKey) => ({
+      name: "nvidia",
+      apiKey,
+      baseURL: process.env.AI_BASE_URL || "https://integrate.api.nvidia.com/v1",
+      model: process.env.AI_MODEL || "meta/muse-glimmer-30b",
     })),
   ];
   if (!providers.length) throw new Error("ai_not_configured");
@@ -334,7 +335,14 @@ async function generateArticle(
       });
       const text = result.choices[0]?.message?.content;
       if (!text) throw new Error("empty_ai_response");
-      return normalizeGeneratedArticle(parseGeneratedArticle(text));
+      const article = normalizeGeneratedArticle(parseGeneratedArticle(text));
+      const schemaErrors = validateArticle(article).filter((issue) => issue.level === "error");
+      if (schemaErrors.length) throw new Error("generated_schema_validation_failed");
+      console.info("[article-generation] provider succeeded", {
+        provider: provider.name,
+        attempt: index + 1,
+      });
+      return article;
     } catch (error) {
       lastError = error;
       if (index === providers.length - 1 || !canTryAnotherNvidiaKey(error)) throw error;

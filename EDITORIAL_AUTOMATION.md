@@ -37,12 +37,11 @@ FIREBASE_PROJECT_ID=cie-connect
 FIREBASE_SERVICE_ACCOUNT_JSON=<Firebase service account JSON>
 ```
 
-The second and third NVIDIA keys are optional server-only fallbacks. They are
-used only when an earlier credential is rejected, rate-limited, times out, or
-the NVIDIA service returns a retryable upstream failure.
-
-`GEMINI_API_KEY` is an optional final fallback and is sent only to Google's
-official OpenAI-compatible Gemini endpoint. Keep it server-side.
+Gemini is the primary provider. `GEMINI_API_KEY_2` is tried next when present;
+NVIDIA keys are then used as fallback credentials if Gemini times out, is
+unavailable, rate-limited, returns invalid JSON, or fails schema validation.
+The exact same priority is used by manual Generate and the Editorial Worker.
+Keep all provider keys server-side.
 
 The checked-in `api/index.ts` exposes the Express API and the repository's
 `.github/workflows/editorial-worker.yml` invokes the worker every five minutes.
