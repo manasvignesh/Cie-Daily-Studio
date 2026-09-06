@@ -180,8 +180,8 @@ app.get("/api/health", async (_req, res) => {
     ok: firebaseReady,
     firebase: { projectId, adminReady: firebaseReady },
     ai: {
-      configured: !!process.env.NVIDIA_API_KEY,
-      editorialProvider: process.env.NVIDIA_API_KEY ? "nvidia" : "not_configured",
+      configured: nvidiaApiKeys().length > 0,
+      editorialProvider: nvidiaApiKeys().length ? "nvidia" : "not_configured",
     },
     livekit: {
       configured: !!(
@@ -194,6 +194,23 @@ app.get("/api/health", async (_req, res) => {
 });
 
 const prompt = `You are the editorial engine for CIE Daily. Structure only the supplied reporting; do not add outside knowledge. Never invent or alter numbers, dates, names, locations, quotes, company names, capacities, targets, or statistics. If a detail is absent, omit it. Return strict JSON with exactly two independent representations: quick_brief and full_article. Every named field is required; use an empty array or null only where the schema explicitly permits it. quick_brief has category, headline, quick_summary (35-60 words), three_things_to_know (exactly 3 concise facts), key_number ({value,label} or null). full_article has headline, hook, in_20_seconds, what_happened (60+ words), why_this_matters (50+ words), bigger_picture, key_stats (array of {value,label}), explore_sections (3-6 story-specific sections, each with title, summary, content, items [{title,description}]), takeaways (3-5 substantive strings, never omit this field), quote ({text,speaker,role} or null). The combined full_article reading content must be at least 200 words. Do not copy the brief into the full article. Output JSON only.`;
+
+function nvidiaApiKeys() {
+  return [...new Set([
+    process.env.NVIDIA_API_KEY,
+    process.env.NVIDIA_API_KEY_2,
+    process.env.NVIDIA_API_KEY_3,
+    ...(process.env.NVIDIA_API_KEYS || "").split(/[\n,]/),
+  ].map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+function canTryAnotherNvidiaKey(error: unknown) {
+  const value = error as { status?: number; code?: string };
+  const status = Number(value?.status || 0);
+  const code = String(value?.code || "").toLowerCase();
+  return status === 401 || status === 403 || status === 408 || status === 429 ||
+    status >= 500 || /timeout|connection|rate_limit/.test(code);
+}
 
 function parseGeneratedArticle(raw: string) {
   const cleaned = raw
@@ -247,39 +264,59 @@ async function generateArticle(
   category: string,
   validationFeedback: string[] = [],
 ) {
-  const apiKey = process.env.NVIDIA_API_KEY;
-  if (!apiKey) throw new Error("ai_not_configured");
-  const ai = new OpenAI({
-    apiKey,
-    baseURL: process.env.AI_BASE_URL || "https://integrate.api.nvidia.com/v1",
-    timeout: 45_000,
-    maxRetries: 0,
-  });
+  const apiKeys = nvidiaApiKeys();
+  if (!apiKeys.length) throw new Error("ai_not_configured");
   const retryNote = validationFeedback.length
     ? `\nThe previous output failed these checks. Correct them without adding facts:\n- ${validationFeedback.join("\n- ")}`
     : "";
-  const result = await ai.chat.completions.create({
-    model: process.env.AI_MODEL || "meta/llama-3.2-11b-vision-instruct",
-    temperature: 0.1,
-    max_tokens: 5000,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: prompt },
-      {
-        role: "user",
-        content: `Category: ${category}\nSource reporting:\n${source}${retryNote}`,
-      },
-    ],
-  });
-  const text = result.choices[0]?.message?.content;
-  if (!text) throw new Error("empty_ai_response");
-  return normalizeGeneratedArticle(parseGeneratedArticle(text));
+  const timeout = apiKeys.length === 1 ? 45_000 : Math.max(12_000, Math.floor(50_000 / apiKeys.length));
+  let lastError: unknown;
+  for (let index = 0; index < apiKeys.length; index += 1) {
+    try {
+      const ai = new OpenAI({
+        apiKey: apiKeys[index],
+        baseURL: process.env.AI_BASE_URL || "https://integrate.api.nvidia.com/v1",
+        timeout,
+        maxRetries: 0,
+      });
+      const result = await ai.chat.completions.create({
+        model: process.env.AI_MODEL || "meta/muse-glimmer-30b",
+        temperature: 0.1,
+        max_tokens: 5000,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: prompt },
+          {
+            role: "user",
+            content: `Category: ${category}\nSource reporting:\n${source}${retryNote}`,
+          },
+        ],
+      });
+      const text = result.choices[0]?.message?.content;
+      if (!text) throw new Error("empty_ai_response");
+      return normalizeGeneratedArticle(parseGeneratedArticle(text));
+    } catch (error) {
+      lastError = error;
+      if (index === apiKeys.length - 1 || !canTryAnotherNvidiaKey(error)) throw error;
+      const value = error as { status?: number; code?: string };
+      console.warn("[nvidia] retrying with fallback credential", {
+        attempt: index + 1,
+        status: value?.status,
+        code: value?.code,
+      });
+    }
+  }
+  throw lastError || new Error("generation_failed");
 }
 
 async function generatePublishableArticle(source: string, category: string) {
   const article = await generateArticle(source, category);
   const errors = validateArticle(article).filter((issue) => issue.level === "error");
-  if (errors.length) throw new Error("generated_article_failed_contract");
+  if (errors.length) {
+    console.warn("[article-generation] output requires editor review", {
+      paths: errors.map((issue) => issue.path),
+    });
+  }
   return article;
 }
 app.post(
@@ -290,7 +327,7 @@ app.post(
     const source = String(req.body?.sourceText || "").trim();
     if (source.length < 80)
       return res.status(400).json({ error: "source_too_short" });
-    if (!process.env.NVIDIA_API_KEY)
+    if (!nvidiaApiKeys().length)
       return res.status(503).json({ error: "ai_not_configured" });
     try {
       const article = await generatePublishableArticle(

@@ -44,3 +44,9 @@ structuring through the same NVIDIA formatter used by the manual Generate button
 schema validation, and human approval through the Studio's Editorial Inbox. Setup,
 payload, and scheduler instructions are in
 [EDITORIAL_AUTOMATION.md](./EDITORIAL_AUTOMATION.md).
+
+For provider resilience, configure `NVIDIA_API_KEY` and optionally
+`NVIDIA_API_KEY_2` / `NVIDIA_API_KEY_3` as server-only variables. The server
+uses a fallback credential only for authentication, rate-limit, connection,
+timeout, or upstream NVIDIA failures. Never expose these values through a
+`VITE_*` variable.
