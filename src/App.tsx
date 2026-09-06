@@ -632,7 +632,7 @@ function EditorialInbox() {
     return () => window.clearInterval(timer);
   }, []);
 
-  async function action(item: EditorialQueueItem, operation: "regenerate" | "reject" | "publish") {
+  async function action(item: EditorialQueueItem, operation: "regenerate" | "reject" | "publish" | "clear-duplicate") {
     setBusyId(item.id);
     setError("");
     try {
@@ -653,7 +653,7 @@ function EditorialInbox() {
       <PageHead
         kicker="AUTOMATED NEWS DESK"
         title="Editorial Inbox"
-        desc="Incoming reporting is structured by the same NVIDIA formatter as manual Generate, then waits here for human approval."
+        desc="Gemini is primary and NVIDIA is fallback. Incoming reporting waits here for human approval."
         action={
           <button onClick={() => void load()} disabled={loading}>
             <RefreshCw /> Refresh
@@ -689,7 +689,9 @@ function EditorialInbox() {
               <small>{item.source.domain}</small>
               <b>{item.source.title}</b>
               {item.duplicate && (
-                <em><CircleAlert /> {item.duplicate.kind === "exact" ? "Exact source already received" : `Likely duplicate · ${Math.round(item.duplicate.score * 100)}% match`}</em>
+                <em><CircleAlert /> {item.duplicate.kind === "exact"
+                  ? "Exact source already received"
+                  : `Possible duplicate of ${items.find((candidate) => candidate.id === item.duplicate?.matchedQueueId)?.source.title || "another story"} · ${item.duplicate.reason || "strong event/entity match"}`}</em>
               )}
               {item.failureReason && <em className="failedReason">{item.failureReason}</em>}
             </div>
@@ -701,6 +703,9 @@ function EditorialInbox() {
             <span className="queueDate">{item.receivedAt ? new Date(String(item.receivedAt)).toLocaleString() : "Just now"}</span>
             <div className="queueActions">
               <button onClick={() => setSelected(item)} disabled={!item.generatedArticle}><Eye /> Preview</button>
+              {item.duplicate && item.duplicate.kind === "likely" && (
+                <button onClick={() => void action(item, "clear-duplicate")} disabled={busyId === item.id}>Not a duplicate / Process anyway</button>
+              )}
               <button onClick={() => void action(item, "regenerate")} disabled={busyId === item.id || item.status === "published"}><RefreshCw /> Regenerate</button>
               {item.status === "ready_for_review" && (
                 <button className="primary" onClick={() => void action(item, "publish")} disabled={busyId === item.id}><Send /> Approve & Publish</button>

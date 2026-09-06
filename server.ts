@@ -415,6 +415,14 @@ function queueItem(id: string, data: Record<string, any>): EditorialQueueItem {
   return {
     id,
     ...data,
+    duplicate: data.duplicate
+      ? {
+        ...data.duplicate,
+        reason: data.duplicate.reason || (data.duplicate.kind === "exact"
+          ? "The canonical source URL was already submitted."
+          : "The story shares strong event/entity evidence with another queue item."),
+      }
+      : null,
     receivedAt: timestamp(data.receivedAt),
     updatedAt: timestamp(data.updatedAt),
     publishedAt: timestamp(data.publishedAt),
@@ -796,6 +804,14 @@ app.patch("/api/editorial/:id", requireAuth, requireStaff, async (req, res) => {
 app.post("/api/editorial/:id/regenerate", requireAuth, requireStaff, async (req, res) => {
   try {
     return res.json({ item: await editorialService.regenerate(String(req.params.id)) });
+  } catch (error) {
+    return editorialFailure(res, error);
+  }
+});
+
+app.post("/api/editorial/:id/clear-duplicate", requireAuth, requireStaff, async (req, res) => {
+  try {
+    return res.json({ item: await editorialService.clearDuplicate(String(req.params.id)) });
   } catch (error) {
     return editorialFailure(res, error);
   }

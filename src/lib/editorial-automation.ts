@@ -35,6 +35,7 @@ export type DuplicateInfo = {
   kind: 'exact' | 'likely';
   matchedQueueId: string;
   score: number;
+  reason: string;
 };
 
 export type EditorialQueueItem = {
@@ -241,12 +242,27 @@ export function validateIngestStory(
   return errors.length ? { errors } : { story, errors };
 }
 
-function headlineSimilarity(left: string, right: string) {
-  const a = new Set(normalizeHeadline(left).split(' ').filter(Boolean));
-  const b = new Set(normalizeHeadline(right).split(' ').filter(Boolean));
-  if (!a.size || !b.size) return 0;
-  const intersection = [...a].filter((token) => b.has(token)).length;
-  return intersection / new Set([...a, ...b]).size;
+const duplicateStopWords = new Set([
+  'about', 'after', 'again', 'are', 'been', 'being', 'between', 'could', 'enters',
+  'first', 'from', 'has', 'have', 'into', 'more', 'new', 'news', 'over', 'phase',
+  'says', 'their', 'that', 'than', 'this', 'through', 'under', 'will', 'with',
+]);
+
+function meaningfulTokens(value: string) {
+  return new Set(normalizeHeadline(value).split(' ').filter((token) =>
+    token.length >= 3 && !duplicateStopWords.has(token)));
+}
+
+function tokenSimilarity(left: Set<string>, right: Set<string>) {
+  if (!left.size || !right.size) return 0;
+  const intersection = [...left].filter((token) => right.has(token)).length;
+  return intersection / new Set([...left, ...right]).size;
+}
+
+function isDuplicateCandidate(item: EditorialQueueItem) {
+  if (['failed', 'rejected'].includes(item.status) || item.duplicate) return false;
+  const haystack = `${item.source.title} ${item.source.sourceUrl} ${item.source.sourceName}`.toLowerCase();
+  return !/\b(test|sample|dummy|placeholder|fixture)\b|example\.com|localhost|127\.0\.0\.1/.test(haystack);
 }
 
 export function findDuplicate(
@@ -254,20 +270,45 @@ export function findDuplicate(
   existing: EditorialQueueItem[],
 ): DuplicateInfo | null {
   const canonical = canonicalizeSourceUrl(story.sourceUrl);
-  const exact = existing.find((item) => item.canonicalSourceUrl === canonical);
-  if (exact) return { kind: 'exact', matchedQueueId: exact.id, score: 1 };
+  const candidates = existing.filter(isDuplicateCandidate);
+  const exact = candidates.find((item) => item.canonicalSourceUrl === canonical);
+  if (exact) {
+    return {
+      kind: 'exact',
+      matchedQueueId: exact.id,
+      score: 1,
+      reason: 'The canonical source URL was already submitted.',
+    };
+  }
 
   const published = Date.parse(story.publishedAt);
   let best: DuplicateInfo | null = null;
-  for (const item of existing) {
+  const storyTitleTokens = meaningfulTokens(story.title);
+  const storyContextTokens = meaningfulTokens(`${story.title} ${story.summary} ${story.keyFacts.join(' ')} ${story.location || ''}`);
+  for (const item of candidates) {
     const otherPublished = Date.parse(item.source.publishedAt);
     if (Number.isFinite(published) && Number.isFinite(otherPublished) &&
-        Math.abs(published - otherPublished) > 7 * 24 * 60 * 60 * 1000) {
+        Math.abs(published - otherPublished) > 72 * 60 * 60 * 1000) {
       continue;
     }
-    const score = headlineSimilarity(story.title, item.source.title);
-    if (score >= 0.72 && (!best || score > best.score)) {
-      best = { kind: 'likely', matchedQueueId: item.id, score };
+    const otherTitleTokens = meaningfulTokens(item.source.title);
+    const otherContextTokens = meaningfulTokens(`${item.source.title} ${item.source.summary} ${item.source.keyFacts.join(' ')} ${item.source.location || ''}`);
+    const sharedTitle = [...storyTitleTokens].filter((token) => otherTitleTokens.has(token));
+    const titleScore = tokenSimilarity(storyTitleTokens, otherTitleTokens);
+    const contextScore = tokenSimilarity(storyContextTokens, otherContextTokens);
+    const sameLocation = story.location && item.source.location &&
+      tokenSimilarity(meaningfulTokens(story.location), meaningfulTokens(item.source.location)) > 0;
+    // A likely duplicate needs multiple shared event/entity terms plus context;
+    // headline word overlap alone is intentionally insufficient.
+    if (sharedTitle.length < 2 || titleScore < 0.45 || contextScore < 0.2) continue;
+    const score = Math.min(0.99, titleScore * 0.55 + contextScore * 0.35 + (sameLocation ? 0.1 : 0));
+    if (score >= 0.55 && (!best || score > best.score)) {
+      best = {
+        kind: 'likely',
+        matchedQueueId: item.id,
+        score,
+        reason: `Shared event/entity terms: ${sharedTitle.slice(0, 4).join(', ')}${sameLocation ? '; same location' : ''}.`,
+      };
     }
   }
   return best;
@@ -419,6 +460,23 @@ export class EditorialService {
       generationAttempts: 0,
       validationErrors: [],
       failureReason: null,
+    });
+    return (await this.store.get(id))!;
+  }
+
+  async clearDuplicate(id: string) {
+    const item = await this.required(id);
+    if (!item.duplicate) return item;
+    if (['published', 'rejected'].includes(item.status)) {
+      throw new EditorialError('invalid_status', 'This item cannot be requeued.', 409);
+    }
+    await this.store.update(id, {
+      duplicate: null,
+      status: 'discovered',
+      processingStartedAt: null,
+      failureReason: null,
+      validationErrors: [],
+      generationAttempts: 0,
     });
     return (await this.store.get(id))!;
   }

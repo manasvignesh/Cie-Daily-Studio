@@ -35,7 +35,7 @@ test('removes undefined optional fields before Firestore serialization', () => {
 
 const story: IngestStory = {
   title: 'Indian students build a low-cost satellite communications platform',
-  sourceUrl: 'https://example.com/news/student-satellite?utm_source=social',
+  sourceUrl: 'https://universitynews.org/news/student-satellite?utm_source=social',
   sourceName: 'Example News',
   publishedAt: '2026-09-06T08:30:00+05:30',
   domain: 'Technology',
@@ -185,12 +185,67 @@ test('exact and likely duplicates stop before generation', async () => {
   let generations = 0;
   const service = new EditorialService(store, async () => { generations += 1; return generated; });
   await service.ingest(story);
-  const exact = await service.ingest({ ...story, sourceUrl: 'https://www.example.com/news/student-satellite?utm_medium=email' });
+  const exact = await service.ingest({ ...story, sourceUrl: 'https://www.universitynews.org/news/student-satellite?utm_medium=email' });
   assert.equal(exact.status, 'discovered');
   assert.equal(exact.duplicate?.kind, 'exact');
-  const likely = await service.ingest({ ...story, sourceUrl: 'https://another.example/report', sourceName: 'Another Source' });
+  const likely = await service.ingest({ ...story, sourceUrl: 'https://another-source.org/report', sourceName: 'Another Source' });
   assert.equal(likely.duplicate?.kind, 'likely');
   assert.equal(generations, 1);
+});
+
+test('unrelated IIT healthcare and ISRO launch stories are not duplicates', async () => {
+  const store = new MemoryStore();
+  const service = new EditorialService(store, async () => generated);
+  await service.ingest({
+    ...story,
+    title: 'IIT Kharagpur affordable healthcare technology hub enters sustainable phase',
+    sourceUrl: 'https://campusreport.org/iit-kharagpur-healthcare-hub',
+    sourceName: 'Campus Report',
+    domain: 'India',
+    summary: 'IIT Kharagpur has moved an affordable healthcare technology hub into a sustainable operating phase for local innovation and student collaboration.',
+    keyFacts: ['The hub focuses on affordable healthcare technology.', 'IIT Kharagpur is coordinating the initiative.'],
+    location: 'Kharagpur',
+  });
+  const isro = await service.ingest({
+    ...story,
+    title: 'ISRO GSLV launch places navigation satellite into orbit',
+    sourceUrl: 'https://spacewire.org/isro-gslv-navigation-launch',
+    sourceName: 'Space Wire',
+    domain: 'Science',
+    summary: 'ISRO has launched a GSLV mission carrying a navigation satellite into orbit after the vehicle completed its scheduled flight sequence.',
+    keyFacts: ['The mission used a GSLV launch vehicle.', 'The payload is a navigation satellite.'],
+    location: 'Sriharikota',
+  });
+  assert.equal(isro.duplicate, null);
+});
+
+test('editor can clear a likely duplicate and requeue it', async () => {
+  const store = new MemoryStore();
+  const service = new EditorialService(store, async () => generated, defaultDomainsForTest(), 2, false);
+  await service.ingest(story);
+  const duplicate = await service.ingest({ ...story, sourceUrl: 'https://another-source.org/same-story', sourceName: 'Another Source' });
+  assert.equal(duplicate.duplicate?.kind, 'likely');
+  const cleared = await service.clearDuplicate(duplicate.id);
+  assert.equal(cleared.duplicate, null);
+  assert.equal(cleared.status, 'discovered');
+});
+
+test('failed and already-flagged records do not poison future duplicate checks', async () => {
+  const failedStore = new MemoryStore();
+  const failedService = new EditorialService(failedStore, async () => { throw new Error('provider unavailable'); });
+  const failed = await failedService.ingest(story);
+  assert.equal(failed.status, 'failed');
+  const retry = await failedService.ingest({ ...story, sourceUrl: 'https://universitynews.org/news/student-satellite' });
+  assert.equal(retry.duplicate, null);
+
+  const duplicateStore = new MemoryStore();
+  const duplicateService = new EditorialService(duplicateStore, async () => generated, defaultDomainsForTest(), 2, false);
+  const original = await duplicateService.ingest(story);
+  const flagged = await duplicateService.ingest({ ...story, sourceUrl: 'https://another-source.org/same-story', sourceName: 'Another Source' });
+  assert.equal(flagged.duplicate?.kind, 'likely');
+  await duplicateStore.update(original.id, { status: 'failed' });
+  const later = await duplicateService.ingest({ ...story, sourceUrl: 'https://third-source.org/same-story', sourceName: 'Third Source' });
+  assert.equal(later.duplicate, null);
 });
 
 test('NVIDIA formatter failure and invalid output are isolated as failed items', async () => {
