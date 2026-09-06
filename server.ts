@@ -246,8 +246,16 @@ function parseGeneratedArticle(raw: string) {
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
   if (start < 0 || end <= start) throw new Error("invalid_generated_json");
-  const article = JSON.parse(cleaned.slice(start, end + 1));
-  if (!article?.quick_brief || !article?.full_article) {
+  let article: unknown;
+  try {
+    article = JSON.parse(cleaned.slice(start, end + 1));
+  } catch {
+    throw new Error("invalid_generated_json");
+  }
+  if (!article || typeof article !== "object" ||
+    !("quick_brief" in article) || !("full_article" in article) ||
+    !(article as { quick_brief?: unknown }).quick_brief ||
+    !(article as { full_article?: unknown }).full_article) {
     throw new Error("generated_schema_missing");
   }
   return article as Pick<Article, "quick_brief" | "full_article">;
