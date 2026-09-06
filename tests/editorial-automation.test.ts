@@ -12,6 +12,38 @@ import {
   type IngestStory,
 } from '../src/lib/editorial-automation';
 import type { Article } from '../src/lib/types';
+import { firestoreSafeValue } from '../src/lib/firestore-safe';
+
+test('recursively removes undefined values from nested editorial documents', () => {
+  const timestamp = new Date('2026-09-06T00:00:00Z');
+  const safe = firestoreSafeValue({
+    generatedArticle: {
+      full_article: {
+        quote: { text: 'A quote', speaker: 'A student', role: undefined },
+        explore_sections: [{
+          title: 'Details',
+          items: [{ title: 'One', description: undefined }],
+        }],
+        key_stats: [{ value: '2', label: undefined }],
+      },
+    },
+    validationErrors: [undefined, 'none'],
+    processingStartedAt: timestamp,
+    nullable: null,
+  });
+  assert.deepEqual(safe, {
+    generatedArticle: {
+      full_article: {
+        quote: { text: 'A quote', speaker: 'A student' },
+        explore_sections: [{ title: 'Details', items: [{ title: 'One' }] }],
+        key_stats: [{ value: '2' }],
+      },
+    },
+    validationErrors: ['none'],
+    processingStartedAt: timestamp,
+    nullable: null,
+  });
+});
 
 test('classifies editorial failures without exposing provider details', () => {
   assert.equal(classifyEditorialFailure(new Error('NVIDIA 429 rate limit')), 'ai_generation_failed');

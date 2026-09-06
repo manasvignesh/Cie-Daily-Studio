@@ -26,6 +26,7 @@ import {
 } from "./src/lib/editorial-automation.ts";
 import type { Article } from "./src/lib/types.ts";
 import { validateArticle } from "./src/lib/article-contract.ts";
+import { firestoreSafeValue } from "./src/lib/firestore-safe.ts";
 import {
   EditorialToolError,
   submitEditorialStories,
@@ -430,6 +431,17 @@ function queueItem(id: string, data: Record<string, any>): EditorialQueueItem {
   } as EditorialQueueItem;
 }
 
+function logFirestoreWriteFailure(operation: string, queueId: string | undefined, error: unknown) {
+  const value = error as { code?: unknown; status?: unknown; message?: unknown };
+  console.error("[editorial] Firestore write failed", {
+    operation,
+    queueId: queueId || null,
+    code: String(value?.code || "unknown"),
+    status: Number(value?.status || 0) || undefined,
+    message: String(value?.message || "unknown Firestore error").slice(0, 240),
+  });
+}
+
 const firestoreEditorialStore: EditorialStore = {
   async listRecent(max = 100) {
     const snapshot = await getFirestore()
@@ -440,12 +452,19 @@ const firestoreEditorialStore: EditorialStore = {
     return snapshot.docs.map((document) => queueItem(document.id, document.data()));
   },
   async create(item) {
-    const reference = await getFirestore().collection("editorial_queue").add({
+    const document = firestoreSafeValue({
       ...item,
       source: firestoreSafeIngestStory(item.source),
       receivedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
+    let reference;
+    try {
+      reference = await getFirestore().collection("editorial_queue").add(document);
+    } catch (error) {
+      logFirestoreWriteFailure("create", undefined, error);
+      throw error;
+    }
     console.info("[editorial] story received", { queueId: reference.id });
     return { id: reference.id, ...item };
   },
@@ -454,10 +473,16 @@ const firestoreEditorialStore: EditorialStore = {
     return document.exists ? queueItem(document.id, document.data()!) : null;
   },
   async update(id, patch) {
-    await getFirestore().collection("editorial_queue").doc(id).update({
+    const document = firestoreSafeValue({
       ...patch,
       updatedAt: FieldValue.serverTimestamp(),
     });
+    try {
+      await getFirestore().collection("editorial_queue").doc(id).update(document);
+    } catch (error) {
+      logFirestoreWriteFailure("update", id, error);
+      throw error;
+    }
     if (patch.duplicate) console.info("[editorial] duplicate detected", { queueId: id, kind: patch.duplicate.kind });
     if (patch.status === "processing") console.info("[editorial] generation started", { queueId: id });
     if (patch.status === "ready_for_review") console.info("[editorial] generation succeeded", { queueId: id });
@@ -467,25 +492,30 @@ const firestoreEditorialStore: EditorialStore = {
     const db = getFirestore();
     const reference = db.collection("editorial_queue").doc(id);
     let claimed = false;
-    await db.runTransaction(async (transaction) => {
-      const snapshot = await transaction.get(reference);
-      if (!snapshot.exists) return;
-      const data = snapshot.data() || {};
-      const status = String(data.status || "");
-      const startedAt = data.processingStartedAt?.toDate?.()?.getTime?.() ||
-        data.updatedAt?.toDate?.()?.getTime?.() || 0;
-      const stale = status === "processing" && (!startedAt || Date.now() - startedAt >= staleAfterMs);
-      if (status === "processing" && !stale) return;
-      if (!["discovered", "processing"].includes(status)) return;
-      transaction.update(reference, {
-        status: "processing",
-        processingStartedAt: Timestamp.now(),
-        updatedAt: FieldValue.serverTimestamp(),
-        failureReason: null,
-        validationErrors: [],
+    try {
+      await db.runTransaction(async (transaction) => {
+        const snapshot = await transaction.get(reference);
+        if (!snapshot.exists) return;
+        const data = snapshot.data() || {};
+        const status = String(data.status || "");
+        const startedAt = data.processingStartedAt?.toDate?.()?.getTime?.() ||
+          data.updatedAt?.toDate?.()?.getTime?.() || 0;
+        const stale = status === "processing" && (!startedAt || Date.now() - startedAt >= staleAfterMs);
+        if (status === "processing" && !stale) return;
+        if (!["discovered", "processing"].includes(status)) return;
+        transaction.update(reference, firestoreSafeValue({
+          status: "processing",
+          processingStartedAt: Timestamp.now(),
+          updatedAt: FieldValue.serverTimestamp(),
+          failureReason: null,
+          validationErrors: [],
+        }));
+        claimed = true;
       });
-      claimed = true;
-    });
+    } catch (error) {
+      logFirestoreWriteFailure("claim", id, error);
+      throw error;
+    }
     const item = await firestoreEditorialStore.get(id);
     if (claimed) console.info("[editorial] generation claim acquired", { queueId: id });
     return { claimed, item };
@@ -494,26 +524,31 @@ const firestoreEditorialStore: EditorialStore = {
     const db = getFirestore();
     const queueReference = db.collection("editorial_queue").doc(queueId);
     const postReference = db.collection("posts").doc();
-    await db.runTransaction(async (transaction) => {
-      const queue = await transaction.get(queueReference);
-      if (!queue.exists) throw new EditorialError("not_found", "Editorial item not found.", 404);
-      if (queue.data()?.status !== "approved") {
-        throw new EditorialError("publish_conflict", "Editorial approval changed. Reload and try again.", 409);
-      }
-      transaction.set(postReference, {
-        ...post,
-        createdAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-        publishedAt: FieldValue.serverTimestamp(),
+    try {
+      await db.runTransaction(async (transaction) => {
+        const queue = await transaction.get(queueReference);
+        if (!queue.exists) throw new EditorialError("not_found", "Editorial item not found.", 404);
+        if (queue.data()?.status !== "approved") {
+          throw new EditorialError("publish_conflict", "Editorial approval changed. Reload and try again.", 409);
+        }
+        transaction.set(postReference, firestoreSafeValue({
+          ...post,
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+          publishedAt: FieldValue.serverTimestamp(),
+        }));
+        transaction.update(queueReference, firestoreSafeValue({
+          status: "published",
+          publishedArticleId: postReference.id,
+          publishedAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+          failureReason: null,
+        }));
       });
-      transaction.update(queueReference, {
-        status: "published",
-        publishedArticleId: postReference.id,
-        publishedAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-        failureReason: null,
-      });
-    });
+    } catch (error) {
+      logFirestoreWriteFailure("publish", queueId, error);
+      throw error;
+    }
     console.info("[editorial] publish succeeded", { queueId, articleId: postReference.id });
     return postReference.id;
   },
