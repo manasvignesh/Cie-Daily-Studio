@@ -381,7 +381,7 @@ async function generateArticle(
           ? "provider_timeout_or_budget_exhausted"
           : undefined,
       });
-      if (providerTimedOut && remainingAfterErrorMs <= editorialPersistenceReserveMs) {
+      if (remainingAfterErrorMs <= editorialPersistenceReserveMs) {
         const timeoutError = new Error("editorial_generation_timeout");
         (timeoutError as { code?: string }).code = "EDITORIAL_GENERATION_TIMEOUT";
         throw timeoutError;

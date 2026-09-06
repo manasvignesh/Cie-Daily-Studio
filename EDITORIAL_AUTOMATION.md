@@ -54,6 +54,11 @@ timeout while still draining up to three stories per workflow run. The workflow 
 triggers automatically after a successful editorial-ingest workflow. It retries stale
 processing items after five minutes, and always records `failed` on timeout or
 provider failure.
+The AI chain has a 48-second deadline with a 10-second Firestore/response
+reserve. Gemini receives up to 38 seconds; NVIDIA is attempted only when the
+remaining budget is sufficient. A deadline failure is persisted as retryable
+failure instead of immediately spending a second generation attempt in the
+same Vercel invocation.
 Deploy the complete project, not only `dist`. The deployed endpoint is:
 
 ```text
