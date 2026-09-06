@@ -1,7 +1,12 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
-  "functions": { "api/index.ts": { "maxDuration": 30 } },
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 60,
+      "includeFiles": ["server.ts", "src/lib/**"]
+    }
+  },
   "rewrites": [
     { "source": "/api/:path*", "destination": "/api/index" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
