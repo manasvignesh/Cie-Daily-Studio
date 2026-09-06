@@ -46,7 +46,8 @@ Keep all provider keys server-side.
 The checked-in `api/index.ts` exposes the Express API and the repository's
 `.github/workflows/editorial-worker.yml` invokes the worker every five minutes.
 It reuses the Actions `EDITORIAL_INGEST_SECRET` for worker authentication, so no
-new Vercel secret is required. The worker claims one story per invocation, retries stale
+new Vercel secret is required. Each invocation atomically claims up to three stories,
+processes them sequentially to avoid provider bursts, and retries stale
 processing items after five minutes, and always records `failed` on timeout or
 provider failure.
 Deploy the complete project, not only `dist`. The deployed endpoint is:

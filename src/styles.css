@@ -170,6 +170,19 @@
   opacity: .45;
   cursor: not-allowed;
 }
+.editorialImageEditor {
+  display: grid;
+  grid-template-columns: minmax(180px, .8fr) minmax(240px, 1fr) auto;
+  gap: 14px;
+  align-items: end;
+  margin: 16px 0;
+}
+.editorialImageEditor h3 { margin: 3px 0; }
+.editorialImageEditor p:not(.eyebrow) { color: var(--muted); margin: 0; }
+.editorialImageEditor input { width: 100%; }
+@media (max-width: 760px) {
+  .editorialImageEditor { grid-template-columns: 1fr; }
+}
 .editorialOverlay {
   padding: 3vh 20px;
   overflow-y: auto;

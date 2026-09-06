@@ -73,6 +73,8 @@ export type EditorialGenerator = (
   validationFeedback?: string[],
 ) => Promise<Pick<Article, 'quick_brief' | 'full_article'>>;
 
+export type EditorialImageResolver = (story: IngestStory) => Promise<string | undefined>;
+
 export const editorialProcessingStaleAfterMs = 5 * 60 * 1000;
 
 export type EditorialIdentity = {
@@ -341,7 +343,7 @@ function articleFromGeneration(
     quick_brief: generated.quick_brief,
     full_article: generated.full_article,
     raw_input: sourceText(story),
-    imageUrl: story.imageUrl,
+    ...(story.imageUrl ? { imageUrl: story.imageUrl } : {}),
     mediaUrls: story.imageUrl ? [story.imageUrl] : [],
   };
 }
@@ -367,6 +369,7 @@ export class EditorialService {
     private readonly allowedDomains = defaultDomains,
     private readonly maxGenerationAttempts = 2,
     private readonly processOnIngest = true,
+    private readonly imageResolver?: EditorialImageResolver,
   ) {}
 
   domains() {
@@ -415,10 +418,21 @@ export class EditorialService {
     }
     let feedback: string[] = [];
     let lastFailure = '';
+    let resolvedStory = story;
+    if (this.imageResolver) {
+      try {
+        const imageUrl = await this.imageResolver(story);
+        resolvedStory = imageUrl ? { ...story, imageUrl } : { ...story, imageUrl: undefined };
+        await this.store.update(id, { source: resolvedStory });
+      } catch (error) {
+        // Image discovery is best effort; generation must continue without it.
+        console.warn('[editorial] image discovery skipped', { queueId: id, error });
+      }
+    }
     for (let attempt = 1; attempt <= this.maxGenerationAttempts; attempt += 1) {
       try {
-        const generated = await this.generator(story, feedback);
-        const article = articleFromGeneration(story, generated);
+        const generated = await this.generator(resolvedStory, feedback);
+        const article = articleFromGeneration(resolvedStory, generated);
         feedback = articleValidationErrors(article);
         if (feedback.length) {
           lastFailure = `Generated article failed validation: ${feedback.join('; ')}`;
@@ -464,6 +478,14 @@ export class EditorialService {
     return (await this.store.get(id))!;
   }
 
+  async processBatch(items: EditorialQueueItem[], limit = 3) {
+    const results: EditorialQueueItem[] = [];
+    for (const item of items.slice(0, limit)) {
+      results.push(await this.process(item.id, item.source));
+    }
+    return results;
+  }
+
   async clearDuplicate(id: string) {
     const item = await this.required(id);
     if (!item.duplicate) return item;
@@ -489,12 +511,14 @@ export class EditorialService {
     if (!generatedArticle?.quick_brief || !generatedArticle?.full_article) {
       throw new EditorialError('invalid_article', 'Both Quick Brief and Full Story are required.', 422);
     }
-    const article = articleFromGeneration(item.source, generatedArticle);
+    const editedStory = { ...item.source, imageUrl: generatedArticle.imageUrl };
+    const article = articleFromGeneration(editedStory, generatedArticle);
     const errors = articleValidationErrors(article);
     if (errors.length) {
       throw new EditorialError('invalid_article', errors.join('; '), 422);
     }
     await this.store.update(id, {
+      source: editedStory,
       generatedArticle: article,
       status: 'ready_for_review',
       validationErrors: [],

@@ -208,6 +208,23 @@ test('a batch of ten stories queues without synchronous generation', async () =>
   assert.equal(store.items.size, 10);
 });
 
+test('worker batch processing resolves at most three of ten pending stories', async () => {
+  const store = new MemoryStore();
+  const service = new EditorialService(store, async () => generated, defaultDomainsForTest(), 2, false);
+  for (let index = 0; index < 10; index += 1) {
+    await service.ingest({
+      ...story,
+      title: `UniqueTopic${index} orbital engineering report`,
+      sourceUrl: `https://universitynews.org/orbital-${index}`,
+    });
+  }
+  const pending = [...store.items.values()];
+  const results = await service.processBatch(pending, 3);
+  assert.equal(results.length, 3);
+  assert.equal(results.filter((item) => item.status === 'ready_for_review').length, 3);
+  assert.equal([...store.items.values()].filter((item) => item.status === 'discovered').length, 7);
+});
+
 function defaultDomainsForTest() {
   return ['Technology', 'Startups', 'AI & ML', 'Science', 'Engineering', 'India', 'Business'];
 }

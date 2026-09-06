@@ -694,6 +694,9 @@ function EditorialInbox() {
                   : `Possible duplicate of ${items.find((candidate) => candidate.id === item.duplicate?.matchedQueueId)?.source.title || "another story"} · ${item.duplicate.reason || "strong event/entity match"}`}</em>
               )}
               {item.failureReason && <em className="failedReason">{item.failureReason}</em>}
+              {item.generatedArticle && !item.generatedArticle.imageUrl && (
+                <em><Image /> No source image — replace before publishing</em>
+              )}
             </div>
             <div className="queueSource">
               <b>{item.source.sourceName}</b>
@@ -748,6 +751,14 @@ function EditorialReview({
     [saving, setSaving] = useState(false),
     [message, setMessage] = useState("");
   const issues = validateArticle(draft);
+  function replaceImage(value: string) {
+    const imageUrl = value.trim();
+    setDraft((current) => ({
+      ...current,
+      ...(imageUrl ? { imageUrl } : {}),
+      ...(imageUrl ? { mediaUrls: [imageUrl, ...(current.mediaUrls || []).filter((url) => url !== imageUrl)] } : { imageUrl: undefined, mediaUrls: [] }),
+    }));
+  }
   async function saveEdits() {
     if (issues.some((issue) => issue.level === "error")) {
       setMessage("Resolve validation errors before saving.");
@@ -779,6 +790,11 @@ function EditorialReview({
           <button className={mode === "edit" ? "active" : ""} onClick={() => setMode("edit")}><FileText /> Edit production data</button>
         </div>
         {message && <div className="notice">{message}</div>}
+        <section className="panel editorialImageEditor">
+          <div><p className="eyebrow">ARTICLE IMAGE</p><h3>{draft.imageUrl ? "Cover image ready" : "No source image"}</h3><p>{draft.imageUrl ? "Replace it with a verified article image URL if needed." : "Provide a direct image URL before publishing if the source has no usable image."}</p></div>
+          <input aria-label="Replace image URL" placeholder="https://…/hero-image.jpg" defaultValue={draft.imageUrl || ""} onBlur={(event) => replaceImage(event.currentTarget.value)} />
+          <button onClick={() => replaceImage("")} disabled={!draft.imageUrl}>Remove image</button>
+        </section>
         {mode === "preview" ? (
           <div className="productionPreview">
             <section className="briefPreview">

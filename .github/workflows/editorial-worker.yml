@@ -16,7 +16,7 @@ jobs:
   process:
     runs-on: ubuntu-latest
     steps:
-      - name: Process one pending editorial item
+      - name: Process up to three pending editorial items
         env:
           EDITORIAL_WORKER_SECRET: ${{ secrets.EDITORIAL_INGEST_SECRET }}
         run: >-

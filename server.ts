@@ -27,6 +27,7 @@ import {
 import type { Article } from "./src/lib/types.ts";
 import { validateArticle } from "./src/lib/article-contract.ts";
 import { firestoreSafeValue } from "./src/lib/firestore-safe.ts";
+import { resolveArticleImage } from "./src/lib/article-images.ts";
 import {
   EditorialToolError,
   submitEditorialStories,
@@ -561,6 +562,7 @@ const editorialService = new EditorialService(
   configuredDomains(),
   2,
   false,
+  (story) => resolveArticleImage(story),
 );
 
 function secureTokenMatches(actual: string, expected: string) {
@@ -719,11 +721,20 @@ app.get("/api/editorial-worker", requireEditorialWorker, async (_req, res) => {
         const timestamp = started ? Date.parse(String(started)) : 0;
         return !timestamp || Date.now() - timestamp >= editorialProcessingStaleAfterMs;
       })
-      .slice(0, 1);
+      .slice(0, 3);
     if (!candidates.length) return res.json({ ok: true, processed: 0, message: "No pending editorial items." });
-    const item = candidates[0];
-    const result = await editorialService.process(item.id, item.source);
-    return res.json({ ok: true, processed: 1, queueId: item.id, status: result.status });
+    const results = await editorialService.processBatch(candidates, 3);
+    const remaining = (await firestoreEditorialStore.listRecent(100)).filter((item) =>
+      !item.duplicate && (item.status === "discovered" || item.status === "processing"));
+    return res.json({
+      ok: true,
+      processed: results.length,
+      ready: results.filter((item) => item.status === "ready_for_review").length,
+      failed: results.filter((item) => item.status === "failed").length,
+      queueIds: results.map((item) => item.id),
+      statuses: results.map((item) => ({ queueId: item.id, status: item.status })),
+      remaining: remaining.length,
+    });
   } catch (error) {
     const category = classifyEditorialFailure(error);
     console.error("[editorial-worker] failed", { category, error });
