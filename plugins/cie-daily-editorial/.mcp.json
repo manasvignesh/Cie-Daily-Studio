@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "cie-daily-editorial": {
+      "url": "https://cie-daily-studio.vercel.app/api/mcp",
+      "headers": {
+        "Authorization": "Bearer ${CIE_DAILY_TOOL_API_KEY}"
+      }
+    }
+  }
+}

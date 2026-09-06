@@ -45,6 +45,11 @@ schema validation, and human approval through the Studio's Editorial Inbox. Setu
 payload, and scheduler instructions are in
 [EDITORIAL_AUTOMATION.md](./EDITORIAL_AUTOMATION.md).
 
+ChatGPT scheduled-task and custom-action integration is documented in
+[CHATGPT_EDITORIAL_TOOL.md](./CHATGPT_EDITORIAL_TOOL.md). It exposes only the
+`submit_editorial_story` queue action and deliberately provides no approval or
+publishing capability.
+
 For provider resilience, configure `NVIDIA_API_KEY` and optionally
 `NVIDIA_API_KEY_2` / `NVIDIA_API_KEY_3` as server-only variables. The server
 uses a fallback credential only for authentication, rate-limit, connection,

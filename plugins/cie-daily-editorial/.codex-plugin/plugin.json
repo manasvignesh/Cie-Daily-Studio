@@ -1,0 +1,18 @@
+{
+  "name": "cie-daily-editorial",
+  "version": "0.1.0",
+  "description": "Submit verified stories to the CIE Daily Editorial Inbox for human review.",
+  "author": {
+    "name": "CIE Daily"
+  },
+  "interface": {
+    "displayName": "CIE Daily Editorial",
+    "shortDescription": "Queue verified stories for editorial review.",
+    "longDescription": "Submits canonical news-story batches to CIE Daily's NVIDIA-backed Editorial Inbox and stops at Ready for Review.",
+    "developerName": "CIE Daily",
+    "category": "Productivity",
+    "capabilities": ["Submit editorial stories"],
+    "defaultPrompt": "Submit verified recent stories to the CIE Daily Editorial Inbox. Never publish them."
+  },
+  "mcpServers": "./.mcp.json"
+}

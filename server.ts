@@ -22,6 +22,11 @@ import {
 } from "./src/lib/editorial-automation.ts";
 import type { Article } from "./src/lib/types.ts";
 import { validateArticle } from "./src/lib/article-contract.ts";
+import {
+  EditorialToolError,
+  submitEditorialStories,
+  submitEditorialStoryTool,
+} from "./src/lib/editorial-tool.ts";
 
 const projectId =
   process.env.FIREBASE_PROJECT_ID ||
@@ -491,6 +496,54 @@ function requireIngestionSecret(req: Request, res: Response, next: () => void) {
   next();
 }
 
+const editorialToolBuckets = new Map<string, { count: number; resetAt: number }>();
+function requireEditorialToolKey(req: Request, res: Response, next: () => void) {
+  const configured = process.env.CIE_DAILY_TOOL_API_KEY || "";
+  if (!configured) {
+    return void res.status(503).json({
+      error: "editorial_tool_not_configured",
+      message: "The editorial submission tool is not configured.",
+    });
+  }
+  const token = bearer(req);
+  if (!token || !secureTokenMatches(token, configured)) {
+    return void res.status(401).json({
+      error: "invalid_tool_token",
+      message: "A valid tool credential is required.",
+    });
+  }
+  const key = req.ip || "unknown";
+  const now = Date.now();
+  const current = editorialToolBuckets.get(key);
+  if (current && current.resetAt > now && current.count >= 10) {
+    return void res.status(429).json({
+      error: "rate_limited",
+      message: "Too many editorial submissions. Try again shortly.",
+    });
+  }
+  editorialToolBuckets.set(key, current && current.resetAt > now
+    ? { ...current, count: current.count + 1 }
+    : { count: 1, resetAt: now + 60_000 });
+  next();
+}
+
+async function executeEditorialTool(input: unknown) {
+  return submitEditorialStories(input, {
+    ingestSecret: process.env.EDITORIAL_INGEST_SECRET || "",
+  });
+}
+
+function editorialToolFailure(res: Response, error: unknown) {
+  if (error instanceof EditorialToolError) {
+    return res.status(error.status).json({ error: error.code, message: error.message });
+  }
+  console.error("[editorial-tool] request failed", error);
+  return res.status(500).json({
+    error: "editorial_tool_failed",
+    message: "The editorial submission could not be completed.",
+  });
+}
+
 function editorialFailure(res: Response, error: unknown) {
   if (error instanceof EditorialError) {
     return res.status(error.status).json({ error: error.code, message: error.message });
@@ -535,6 +588,95 @@ app.post("/api/editorial-ingest", requireIngestionSecret, async (req, res) => {
   const single = !Array.isArray(req.body?.stories);
   const failed = results.every((result) => result.ok === false);
   return res.status(single && failed ? 400 : 201).json(single ? results[0] : { results });
+});
+
+// REST/OpenAPI adapter for ChatGPT Actions and other server-to-server tools.
+// It deliberately forwards only to ingestion; approval and publishing remain
+// available exclusively inside the authenticated Studio Editorial Inbox.
+app.post("/api/chatgpt/editorial-stories", requireEditorialToolKey, async (req, res) => {
+  try {
+    return res.status(201).json(await executeEditorialTool(req.body));
+  } catch (error) {
+    return editorialToolFailure(res, error);
+  }
+});
+
+// Stateless Streamable HTTP MCP endpoint. Stateless handling is important on
+// serverless hosts because subsequent JSON-RPC requests may reach another
+// function instance.
+app.post("/api/mcp", requireEditorialToolKey, async (req, res) => {
+  const message = req.body as {
+    jsonrpc?: unknown;
+    id?: string | number | null;
+    method?: unknown;
+    params?: { name?: unknown; arguments?: unknown };
+  };
+  if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") {
+    return res.status(400).json({
+      jsonrpc: "2.0",
+      id: message?.id ?? null,
+      error: { code: -32600, message: "Invalid JSON-RPC request" },
+    });
+  }
+  if (message.method === "notifications/initialized") return res.status(202).end();
+  if (message.method === "initialize") {
+    return res.json({
+      jsonrpc: "2.0",
+      id: message.id ?? null,
+      result: {
+        protocolVersion: "2025-06-18",
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: { name: "cie-daily-editorial", version: "1.0.0" },
+      },
+    });
+  }
+  if (message.method === "tools/list") {
+    return res.json({
+      jsonrpc: "2.0",
+      id: message.id ?? null,
+      result: { tools: [submitEditorialStoryTool] },
+    });
+  }
+  if (message.method === "tools/call") {
+    if (message.params?.name !== submitEditorialStoryTool.name) {
+      return res.json({
+        jsonrpc: "2.0",
+        id: message.id ?? null,
+        error: { code: -32602, message: "Unknown tool" },
+      });
+    }
+    try {
+      const result = await executeEditorialTool(message.params?.arguments);
+      return res.json({
+        jsonrpc: "2.0",
+        id: message.id ?? null,
+        result: {
+          content: [{ type: "text", text: JSON.stringify(result) }],
+          structuredContent: result,
+          isError: !result.ok,
+        },
+      });
+    } catch (error) {
+      const safe = error instanceof EditorialToolError
+        ? { error: error.code, message: error.message }
+        : { error: "editorial_tool_failed", message: "The editorial submission could not be completed." };
+      if (!(error instanceof EditorialToolError)) console.error("[mcp] tool call failed", error);
+      return res.json({
+        jsonrpc: "2.0",
+        id: message.id ?? null,
+        result: {
+          content: [{ type: "text", text: JSON.stringify(safe) }],
+          structuredContent: safe,
+          isError: true,
+        },
+      });
+    }
+  }
+  return res.json({
+    jsonrpc: "2.0",
+    id: message.id ?? null,
+    error: { code: -32601, message: "Method not found" },
+  });
 });
 
 app.get("/api/editorial", requireAuth, requireStaff, async (_req, res) => {

@@ -1,0 +1,118 @@
+openapi: 3.1.0
+info:
+  title: CIE Daily Editorial Inbox
+  version: 1.0.0
+  description: Submit verified news stories for NVIDIA formatting and human editorial review. This API never publishes articles.
+servers:
+  - url: https://cie-daily-studio.vercel.app
+paths:
+  /api/chatgpt/editorial-stories:
+    post:
+      operationId: submit_editorial_story
+      summary: Submit stories to the Editorial Inbox
+      description: Sends one to ten verified stories into the existing CIE Daily ingestion pipeline. Generation stops at ready_for_review; this operation cannot approve or publish.
+      security:
+        - toolApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitEditorialStoriesRequest'
+      responses:
+        '201':
+          description: Stories accepted and processed by the editorial pipeline.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmitEditorialStoriesResponse'
+        '400':
+          description: Invalid canonical story payload.
+        '401':
+          description: Missing or invalid tool API key.
+        '429':
+          description: Tool rate limit exceeded.
+        '502':
+          description: The existing Editorial Inbox ingestion endpoint failed.
+        '503':
+          description: The tool or ingestion service is not configured.
+components:
+  securitySchemes:
+    toolApiKey:
+      type: http
+      scheme: bearer
+  schemas:
+    EditorialStory:
+      type: object
+      additionalProperties: false
+      required: [title, sourceUrl, sourceName, publishedAt, domain, summary, keyFacts]
+      properties:
+        title:
+          type: string
+          minLength: 8
+          maxLength: 300
+        sourceUrl:
+          type: string
+          format: uri
+        sourceName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        publishedAt:
+          type: string
+          format: date-time
+        domain:
+          type: string
+          enum: [Technology, Startups, AI & ML, Science, Engineering, India, Business]
+        summary:
+          type: string
+          minLength: 40
+          maxLength: 4000
+        keyFacts:
+          type: array
+          minItems: 2
+          maxItems: 12
+          items:
+            type: string
+            minLength: 1
+            maxLength: 1000
+        location:
+          type: string
+          maxLength: 200
+        imageUrl:
+          type: string
+          format: uri
+    SubmitEditorialStoriesRequest:
+      type: object
+      additionalProperties: false
+      required: [stories]
+      properties:
+        stories:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/EditorialStory'
+    EditorialResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        id: { type: string }
+        status: { type: string }
+        duplicate: {}
+        error: { type: string }
+        message: { type: string }
+    SubmitEditorialStoriesResponse:
+      type: object
+      required: [ok, submitted, readyForReview, published, results]
+      properties:
+        ok: { type: boolean }
+        submitted: { type: integer }
+        readyForReview: { type: integer }
+        published:
+          type: boolean
+          const: false
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/EditorialResult'
