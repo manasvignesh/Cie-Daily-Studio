@@ -2,6 +2,7 @@ import "dotenv/config";
 import express, { type Request, type Response } from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { timingSafeEqual } from "node:crypto";
 import {
   initializeApp,
   cert,
@@ -11,6 +12,15 @@ import { getAuth } from "firebase-admin/auth";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { AccessToken } from "livekit-server-sdk";
 import OpenAI from "openai";
+import {
+  EditorialError,
+  EditorialService,
+  sourceText,
+  type EditorialQueueItem,
+  type EditorialStore,
+  type IngestStory,
+} from "./src/lib/editorial-automation.js";
+import type { Article } from "./src/lib/types.js";
 
 const projectId =
   process.env.FIREBASE_PROJECT_ID ||
@@ -148,7 +158,10 @@ app.get("/api/health", (_req, res) =>
   res.json({
     ok: true,
     firebase: { projectId, auth: true },
-    ai: { configured: !!process.env.NVIDIA_API_KEY },
+    ai: {
+      configured: !!process.env.NVIDIA_API_KEY,
+      editorialProvider: process.env.NVIDIA_API_KEY ? "nvidia" : "not_configured",
+    },
     livekit: {
       configured: !!(
         process.env.LIVEKIT_API_KEY &&
@@ -159,7 +172,7 @@ app.get("/api/health", (_req, res) =>
   }),
 );
 
-const prompt = `You are the editorial engine for CIE Daily. Use only the supplied source. Return strict JSON with exactly two independent representations: quick_brief and full_article. quick_brief has category, headline, quick_summary (35-60 words), three_things_to_know (exactly 3 concise facts), key_number ({value,label} or null). full_article has headline, hook, in_20_seconds, what_happened (60+ words), why_this_matters (50+ words), bigger_picture, key_stats (array), explore_sections (3-6 story-specific sections, never generic "Key Story Breakdown"; each has title, summary, content, items [{title,description}]), takeaways (3-5), quote ({text,speaker,role} or null). Do not copy the brief into the full article. Never invent facts or quotes.`;
+const prompt = `You are the editorial engine for CIE Daily. Structure only the supplied reporting; do not add outside knowledge. Never invent or alter numbers, dates, names, locations, quotes, company names, capacities, targets, or statistics. If a detail is absent, omit it. Return strict JSON with exactly two independent representations: quick_brief and full_article. quick_brief has category, headline, quick_summary (35-60 words), three_things_to_know (exactly 3 concise facts), key_number ({value,label} or null). full_article has headline, hook, in_20_seconds, what_happened (60+ words), why_this_matters (50+ words), bigger_picture, key_stats (array of {value,label}), explore_sections (3-6 story-specific sections, each with title, summary, content, items [{title,description}]), takeaways (3-5), quote ({text,speaker,role} or null). Do not copy the brief into the full article. Output JSON only.`;
 
 function parseGeneratedArticle(raw: string) {
   const cleaned = raw
@@ -169,12 +182,44 @@ function parseGeneratedArticle(raw: string) {
     .trim();
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("AI returned no JSON object");
+  if (start < 0 || end <= start) throw new Error("invalid_generated_json");
   const article = JSON.parse(cleaned.slice(start, end + 1));
   if (!article?.quick_brief || !article?.full_article) {
-    throw new Error("AI response is missing quick_brief or full_article");
+    throw new Error("generated_schema_missing");
   }
-  return article;
+  return article as Pick<Article, "quick_brief" | "full_article">;
+}
+
+async function generateArticle(
+  source: string,
+  category: string,
+  validationFeedback: string[] = [],
+) {
+  const apiKey = process.env.NVIDIA_API_KEY;
+  if (!apiKey) throw new Error("ai_not_configured");
+  const ai = new OpenAI({
+    apiKey,
+    baseURL: process.env.AI_BASE_URL || "https://integrate.api.nvidia.com/v1",
+  });
+  const retryNote = validationFeedback.length
+    ? `\nThe previous output failed these checks. Correct them without adding facts:\n- ${validationFeedback.join("\n- ")}`
+    : "";
+  const result = await ai.chat.completions.create({
+    model: process.env.AI_MODEL || "meta/llama-3.2-11b-vision-instruct",
+    temperature: 0.1,
+    max_tokens: 5000,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: prompt },
+      {
+        role: "user",
+        content: `Category: ${category}\nSource reporting:\n${source}${retryNote}`,
+      },
+    ],
+  });
+  const text = result.choices[0]?.message?.content;
+  if (!text) throw new Error("empty_ai_response");
+  return parseGeneratedArticle(text);
 }
 app.post(
   "/api/generate-article",
@@ -187,27 +232,10 @@ app.post(
     if (!process.env.NVIDIA_API_KEY)
       return res.status(503).json({ error: "ai_not_configured" });
     try {
-      const ai = new OpenAI({
-        apiKey: process.env.NVIDIA_API_KEY,
-        baseURL:
-          process.env.AI_BASE_URL || "https://integrate.api.nvidia.com/v1",
-      });
-      const result = await ai.chat.completions.create({
-        model: process.env.AI_MODEL || "meta/llama-3.2-11b-vision-instruct",
-        temperature: 0.15,
-        max_tokens: 5000,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: prompt },
-          {
-            role: "user",
-            content: `Category: ${String(req.body?.category || "General")}\nSource:\n${source}`,
-          },
-        ],
-      });
-      const text = result.choices[0]?.message?.content;
-      if (!text) throw new Error("empty_ai_response");
-      const article = parseGeneratedArticle(text);
+      const article = await generateArticle(
+        source,
+        String(req.body?.category || "General"),
+      );
       return res.json({ article });
     } catch (error: any) {
       return res
@@ -219,6 +247,204 @@ app.post(
     }
   },
 );
+
+function configuredDomains() {
+  return (process.env.EDITORIAL_DOMAINS ||
+    "Technology,Startups,AI & ML,Science,Engineering,India,Business")
+    .split(",")
+    .map((domain) => domain.trim())
+    .filter(Boolean);
+}
+
+function queueItem(id: string, data: Record<string, any>): EditorialQueueItem {
+  const timestamp = (value: any) => value?.toDate?.().toISOString?.() || value || null;
+  return {
+    id,
+    ...data,
+    receivedAt: timestamp(data.receivedAt),
+    updatedAt: timestamp(data.updatedAt),
+    publishedAt: timestamp(data.publishedAt),
+  } as EditorialQueueItem;
+}
+
+const firestoreEditorialStore: EditorialStore = {
+  async listRecent(max = 100) {
+    const snapshot = await getFirestore()
+      .collection("editorial_queue")
+      .orderBy("receivedAt", "desc")
+      .limit(max)
+      .get();
+    return snapshot.docs.map((document) => queueItem(document.id, document.data()));
+  },
+  async create(item) {
+    const reference = await getFirestore().collection("editorial_queue").add({
+      ...item,
+      receivedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    console.info("[editorial] story received", { queueId: reference.id });
+    return { id: reference.id, ...item };
+  },
+  async get(id) {
+    const document = await getFirestore().collection("editorial_queue").doc(id).get();
+    return document.exists ? queueItem(document.id, document.data()!) : null;
+  },
+  async update(id, patch) {
+    await getFirestore().collection("editorial_queue").doc(id).update({
+      ...patch,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    if (patch.duplicate) console.info("[editorial] duplicate detected", { queueId: id, kind: patch.duplicate.kind });
+    if (patch.status === "processing") console.info("[editorial] generation started", { queueId: id });
+    if (patch.status === "ready_for_review") console.info("[editorial] generation succeeded", { queueId: id });
+    if (patch.status === "failed") console.warn("[editorial] validation or generation failed", { queueId: id });
+  },
+  async publish(queueId, post) {
+    const db = getFirestore();
+    const queueReference = db.collection("editorial_queue").doc(queueId);
+    const postReference = db.collection("posts").doc();
+    await db.runTransaction(async (transaction) => {
+      const queue = await transaction.get(queueReference);
+      if (!queue.exists) throw new EditorialError("not_found", "Editorial item not found.", 404);
+      if (queue.data()?.status !== "approved") {
+        throw new EditorialError("publish_conflict", "Editorial approval changed. Reload and try again.", 409);
+      }
+      transaction.set(postReference, {
+        ...post,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        publishedAt: FieldValue.serverTimestamp(),
+      });
+      transaction.update(queueReference, {
+        status: "published",
+        publishedArticleId: postReference.id,
+        publishedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        failureReason: null,
+      });
+    });
+    console.info("[editorial] publish succeeded", { queueId, articleId: postReference.id });
+    return postReference.id;
+  },
+};
+
+const editorialService = new EditorialService(
+  firestoreEditorialStore,
+  (story: IngestStory, feedback?: string[]) =>
+    generateArticle(sourceText(story), story.domain, feedback),
+  configuredDomains(),
+  2,
+);
+
+function secureTokenMatches(actual: string, expected: string) {
+  const left = Buffer.from(actual);
+  const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+const ingestBuckets = new Map<string, { count: number; resetAt: number }>();
+function requireIngestionSecret(req: Request, res: Response, next: () => void) {
+  const configured = process.env.EDITORIAL_INGEST_SECRET || "";
+  if (!configured) return void res.status(503).json({ error: "ingestion_not_configured" });
+  const token = bearer(req);
+  if (!token || !secureTokenMatches(token, configured)) {
+    return void res.status(401).json({ error: "invalid_ingestion_token" });
+  }
+  const key = req.ip || "unknown";
+  const now = Date.now();
+  const current = ingestBuckets.get(key);
+  if (current && current.resetAt > now && current.count >= 30) {
+    return void res.status(429).json({ error: "rate_limited" });
+  }
+  ingestBuckets.set(key, current && current.resetAt > now
+    ? { ...current, count: current.count + 1 }
+    : { count: 1, resetAt: now + 60_000 });
+  next();
+}
+
+function editorialFailure(res: Response, error: unknown) {
+  if (error instanceof EditorialError) {
+    return res.status(error.status).json({ error: error.code, message: error.message });
+  }
+  console.error("[editorial] request failed", {
+    kind: error instanceof Error ? error.name : "unknown",
+  });
+  return res.status(500).json({ error: "editorial_operation_failed" });
+}
+
+app.post("/api/editorial-ingest", requireIngestionSecret, async (req, res) => {
+  const stories = Array.isArray(req.body?.stories) ? req.body.stories.slice(0, 10) : [req.body];
+  const results: Array<Record<string, unknown>> = [];
+  for (const story of stories) {
+    try {
+      const item = await editorialService.ingest(story);
+      if (item.duplicate) {
+        console.info("[editorial] duplicate detected", {
+          queueId: item.id,
+          kind: item.duplicate.kind,
+        });
+      }
+      results.push({ ok: true, id: item.id, status: item.status, duplicate: item.duplicate });
+    } catch (error) {
+      results.push({
+        ok: false,
+        error: error instanceof EditorialError ? error.code : "processing_failed",
+        message: error instanceof EditorialError ? error.message : "Story processing failed",
+      });
+    }
+  }
+  const single = !Array.isArray(req.body?.stories);
+  const failed = results.every((result) => result.ok === false);
+  return res.status(single && failed ? 400 : 201).json(single ? results[0] : { results });
+});
+
+app.get("/api/editorial", requireAuth, requireStaff, async (_req, res) => {
+  try {
+    return res.json({ items: await editorialService.list(), domains: editorialService.domains() });
+  } catch (error) {
+    return editorialFailure(res, error);
+  }
+});
+
+app.patch("/api/editorial/:id", requireAuth, requireStaff, async (req, res) => {
+  try {
+    return res.json({ item: await editorialService.edit(String(req.params.id), req.body?.generatedArticle) });
+  } catch (error) {
+    return editorialFailure(res, error);
+  }
+});
+
+app.post("/api/editorial/:id/regenerate", requireAuth, requireStaff, async (req, res) => {
+  try {
+    return res.json({ item: await editorialService.regenerate(String(req.params.id)) });
+  } catch (error) {
+    return editorialFailure(res, error);
+  }
+});
+
+app.post("/api/editorial/:id/reject", requireAuth, requireStaff, async (req, res) => {
+  try {
+    return res.json({ item: await editorialService.reject(String(req.params.id)) });
+  } catch (error) {
+    return editorialFailure(res, error);
+  }
+});
+
+app.post("/api/editorial/:id/publish", requireAuth, requireStaff, async (req: AuthedRequest, res) => {
+  try {
+    const user = req.firebaseUser!;
+    const queueId = String(req.params.id);
+    const item = await editorialService.publish(queueId, {
+      uid: user.uid,
+      name: user.name || user.email?.split("@")[0] || "Editor",
+      email: user.email || "",
+    });
+    return res.json({ item });
+  } catch (error) {
+    console.warn("[editorial] publish failed", { queueId: String(req.params.id) });
+    return editorialFailure(res, error);
+  }
+});
 
 const tokenBuckets = new Map<string, { count: number; reset: number }>();
 app.post("/api/livekit/token", requireAuth, async (req: AuthedRequest, res) => {

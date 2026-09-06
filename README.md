@@ -37,3 +37,10 @@ Published records retain only the top-level aliases the current feed needs (`cat
 
 See [AUDIT.md](./AUDIT.md) for the full evidence-backed map and test status.
 
+## Automated editorial inbox
+
+The server supports authenticated news ingestion, duplicate detection,
+structuring through the same NVIDIA formatter used by the manual Generate button,
+schema validation, and human approval through the Studio's Editorial Inbox. Setup,
+payload, and scheduler instructions are in
+[EDITORIAL_AUTOMATION.md](./EDITORIAL_AUTOMATION.md).

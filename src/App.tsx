@@ -58,6 +58,11 @@ import {
   Command,
   FileText,
   Film,
+  Eye,
+  Inbox,
+  RefreshCw,
+  Send,
+  Ban,
   Image,
   LayoutDashboard,
   LogOut,
@@ -84,6 +89,7 @@ import {
   validateArticle,
 } from "./lib/article-contract";
 import type { Article, LiveStream, StudioUser } from "./lib/types";
+import type { EditorialQueueItem } from "./lib/editorial-automation";
 
 async function readApiJson(response: Response) {
   const text = await response.text();
@@ -107,6 +113,7 @@ const nav = [
   ["Overview", "/", LayoutDashboard],
   ["CONTENT", "label", null],
   ["Articles", "/articles", FileText],
+  ["Editorial Inbox", "/editorial", Inbox],
   ["Reels", "/reels", Clapperboard],
   ["Media Library", "/media", Image],
   ["LIVE & COMMUNITY", "label", null],
@@ -202,6 +209,7 @@ export function App() {
         <Route path="/articles" element={<Articles />} />
         <Route path="/articles/new" element={<ArticleEditor />} />
         <Route path="/articles/:id" element={<ArticleEditor />} />
+        <Route path="/editorial" element={<EditorialInbox />} />
         <Route path="/reels" element={<Reels />} />
         <Route path="/media" element={<Media />} />
         <Route path="/live" element={<LiveHome user={session.user} />} />
@@ -562,6 +570,240 @@ function Metric({
     <div className={accent ? "metric accent" : "metric"}>
       <strong>{n.toLocaleString()}</strong>
       <span>{label}</span>
+    </div>
+  );
+}
+
+async function editorialRequest(path: string, init: RequestInit = {}) {
+  const user = auth.currentUser;
+  if (!user) throw new Error("Your Studio session expired. Sign in again.");
+  const response = await fetch(path, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${await user.getIdToken()}`,
+      ...(init.headers || {}),
+    },
+  });
+  const text = await response.text();
+  let body: any = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`The editorial backend returned HTTP ${response.status} instead of JSON.`);
+  }
+  if (!response.ok) throw new Error(body.message || body.error || "Editorial request failed.");
+  return body;
+}
+
+const editorialStatusLabel: Record<string, string> = {
+  discovered: "Needs duplicate review",
+  processing: "Generating",
+  ready_for_review: "Ready for review",
+  approved: "Publishing",
+  published: "Published",
+  rejected: "Rejected",
+  failed: "Failed",
+};
+
+function EditorialInbox() {
+  const [items, setItems] = useState<EditorialQueueItem[]>([]),
+    [loading, setLoading] = useState(true),
+    [error, setError] = useState(""),
+    [filter, setFilter] = useState("all"),
+    [selected, setSelected] = useState<EditorialQueueItem | null>(null),
+    [busyId, setBusyId] = useState("");
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const body = await editorialRequest("/api/editorial");
+      setItems(body.items || []);
+    } catch (caught: any) {
+      setError(caught.message || "The editorial inbox could not be loaded.");
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function action(item: EditorialQueueItem, operation: "regenerate" | "reject" | "publish") {
+    setBusyId(item.id);
+    setError("");
+    try {
+      await editorialRequest(`/api/editorial/${item.id}/${operation}`, { method: "POST" });
+      setSelected(null);
+      await load();
+    } catch (caught: any) {
+      setError(caught.message || `${operation} failed.`);
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  const visible = filter === "all" ? items : items.filter((item) => item.status === filter);
+  const count = (status: string) => items.filter((item) => item.status === status).length;
+  return (
+    <>
+      <PageHead
+        kicker="AUTOMATED NEWS DESK"
+        title="Editorial Inbox"
+        desc="Incoming reporting is structured by the same NVIDIA formatter as manual Generate, then waits here for human approval."
+        action={
+          <button onClick={() => void load()} disabled={loading}>
+            <RefreshCw /> Refresh
+          </button>
+        }
+      />
+      <div className="editorialMetrics">
+        <button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>
+          <strong>{items.length}</strong><span>All</span>
+        </button>
+        <button className={filter === "processing" ? "active" : ""} onClick={() => setFilter("processing")}>
+          <strong>{count("processing")}</strong><span>Generating</span>
+        </button>
+        <button className={filter === "ready_for_review" ? "active" : ""} onClick={() => setFilter("ready_for_review")}>
+          <strong>{count("ready_for_review")}</strong><span>Ready</span>
+        </button>
+        <button className={filter === "failed" ? "active" : ""} onClick={() => setFilter("failed")}>
+          <strong>{count("failed")}</strong><span>Needs attention</span>
+        </button>
+      </div>
+      {error && <div className="notice editorialError"><CircleAlert /> {error}</div>}
+      <section className="editorialQueue">
+        <div className="queueHeader">
+          <span>Story</span><span>Source</span><span>Status</span><span>Received</span><span>Actions</span>
+        </div>
+        {loading ? (
+          <p className="loading">Loading the editorial queue…</p>
+        ) : visible.length === 0 ? (
+          <Empty icon={Inbox} title="Inbox clear" text="Newly discovered stories will appear here automatically." />
+        ) : visible.map((item) => (
+          <article className="queueRow" key={item.id}>
+            <div className="queueStory">
+              <small>{item.source.domain}</small>
+              <b>{item.source.title}</b>
+              {item.duplicate && (
+                <em><CircleAlert /> {item.duplicate.kind === "exact" ? "Exact source already received" : `Likely duplicate · ${Math.round(item.duplicate.score * 100)}% match`}</em>
+              )}
+              {item.failureReason && <em className="failedReason">{item.failureReason}</em>}
+            </div>
+            <div className="queueSource">
+              <b>{item.source.sourceName}</b>
+              <a href={item.source.sourceUrl} target="_blank" rel="noreferrer">Open source ↗</a>
+            </div>
+            <span className={`queueStatus ${item.status}`}>{editorialStatusLabel[item.status] || item.status}</span>
+            <span className="queueDate">{item.receivedAt ? new Date(String(item.receivedAt)).toLocaleString() : "Just now"}</span>
+            <div className="queueActions">
+              <button onClick={() => setSelected(item)} disabled={!item.generatedArticle}><Eye /> Preview</button>
+              <button onClick={() => void action(item, "regenerate")} disabled={busyId === item.id || item.status === "published"}><RefreshCw /> Regenerate</button>
+              {item.status === "ready_for_review" && (
+                <button className="primary" onClick={() => void action(item, "publish")} disabled={busyId === item.id}><Send /> Approve & Publish</button>
+              )}
+              {!['published', 'rejected'].includes(item.status) && (
+                <button onClick={() => void action(item, "reject")} disabled={busyId === item.id}><Ban /> Reject</button>
+              )}
+            </div>
+          </article>
+        ))}
+      </section>
+      {selected && (
+        <EditorialReview
+          item={selected}
+          close={() => setSelected(null)}
+          saved={async () => { setSelected(null); await load(); }}
+          publish={() => action(selected, "publish")}
+          busy={busyId === selected.id}
+        />
+      )}
+    </>
+  );
+}
+
+function EditorialReview({
+  item,
+  close,
+  saved,
+  publish,
+  busy,
+}: {
+  item: EditorialQueueItem;
+  close: () => void;
+  saved: () => Promise<void>;
+  publish: () => Promise<void>;
+  busy: boolean;
+}) {
+  const [mode, setMode] = useState<"preview" | "edit">("preview"),
+    [draft, setDraft] = useState<Article>(() => structuredClone(item.generatedArticle!)),
+    [saving, setSaving] = useState(false),
+    [message, setMessage] = useState("");
+  const issues = validateArticle(draft);
+  async function saveEdits() {
+    if (issues.some((issue) => issue.level === "error")) {
+      setMessage("Resolve validation errors before saving.");
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    try {
+      await editorialRequest(`/api/editorial/${item.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ generatedArticle: draft }),
+      });
+      await saved();
+    } catch (caught: any) {
+      setMessage(caught.message || "Edits could not be saved.");
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <div className="overlay editorialOverlay" onMouseDown={close}>
+      <section className="editorialReview" onMouseDown={(event) => event.stopPropagation()}>
+        <header>
+          <div><p className="eyebrow">PRODUCTION PREVIEW</p><h2>{draft.quick_brief.headline}</h2></div>
+          <button className="close" onClick={close}><X /></button>
+        </header>
+        <div className="reviewTabs">
+          <button className={mode === "preview" ? "active" : ""} onClick={() => setMode("preview")}><Eye /> Preview</button>
+          <button className={mode === "edit" ? "active" : ""} onClick={() => setMode("edit")}><FileText /> Edit production data</button>
+        </div>
+        {message && <div className="notice">{message}</div>}
+        {mode === "preview" ? (
+          <div className="productionPreview">
+            <section className="briefPreview">
+              <span>{draft.quick_brief.category} · QUICK BRIEF</span>
+              <h2>{draft.quick_brief.headline}</h2>
+              <p>{draft.quick_brief.quick_summary}</p>
+              <ol>{draft.quick_brief.three_things_to_know.map((fact) => <li key={fact}>{fact}</li>)}</ol>
+              {draft.quick_brief.key_number && <strong>{draft.quick_brief.key_number.value}<small>{draft.quick_brief.key_number.label}</small></strong>}
+            </section>
+            <section className="fullPreview">
+              <span>FULL STORY</span><h2>{draft.full_article.headline}</h2><h3>{draft.full_article.hook}</h3>
+              <article><b>What happened</b><p>{draft.full_article.what_happened}</p></article>
+              <article><b>Why this matters</b><p>{draft.full_article.why_this_matters}</p></article>
+              {draft.full_article.explore_sections.map((section) => <article key={section.title}><b>{section.title}</b><p>{section.content}</p></article>)}
+              <article><b>Bigger picture</b><p>{draft.full_article.bigger_picture}</p></article>
+            </section>
+          </div>
+        ) : (
+          <div className="reviewEditor">
+            <section className="panel form"><h2>Swipe Deck / Quick Brief</h2><BriefForm article={draft} set={setDraft} /></section>
+            <section className="panel form"><h2>Full Story</h2><FullForm article={draft} set={setDraft} /></section>
+            <aside className="panel validation"><h2>Validation</h2>{issues.length ? issues.map((issue, index) => <div className={issue.level} key={index}><CircleAlert /><span><b>{issue.path}</b>{issue.message}</span></div>) : <div className="allgood"><Check /> Ready to publish</div>}</aside>
+          </div>
+        )}
+        <footer>
+          <a href={item.source.sourceUrl} target="_blank" rel="noreferrer">Verify original source ↗</a>
+          <div>
+            {mode === "edit" && <button onClick={() => void saveEdits()} disabled={saving}>{saving ? "Saving…" : "Save edits"}</button>}
+            <button className="primary" onClick={() => void publish()} disabled={busy || issues.some((issue) => issue.level === "error")}><Send /> Approve & Publish</button>
+          </div>
+        </footer>
+      </section>
     </div>
   );
 }
