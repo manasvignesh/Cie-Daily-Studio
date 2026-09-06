@@ -43,6 +43,17 @@ test("serverless Live API: auth, room validation and presenter/listener grants",
     const health = await fetch(`${origin}/api/health`);
     assert.equal((await health.json()).livekit.configured, true);
     assert.equal((await fetch(`${origin}/api/missing`)).status, 404);
+    record = { role: "admin" };
+    const editorial = await fetch(`${origin}/api/editorial`, {
+      headers: { Authorization: "Bearer verified-in-test" },
+    });
+    assert.equal(editorial.status, 503);
+    assert.match(editorial.headers.get("content-type") || "", /application\/json/);
+    assert.deepEqual(await editorial.json(), {
+      error: "editorial_service_unavailable",
+      message: "Editorial stories could not be loaded.",
+    });
+    record = { status: "scheduled", roomName: "cie_test", hostId: "host" };
     assert.equal((await request("another_room")).status, 403);
     const presenter = await (await request()).json();
     assert.equal(presenter.role, "presenter");

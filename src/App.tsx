@@ -590,7 +590,7 @@ async function editorialRequest(path: string, init: RequestInit = {}) {
   try {
     body = text ? JSON.parse(text) : {};
   } catch {
-    throw new Error(`The editorial backend returned HTTP ${response.status} instead of JSON.`);
+    throw new Error("Editorial stories could not be loaded. Please try again.");
   }
   if (!response.ok) throw new Error(body.message || body.error || "Editorial request failed.");
   return body;

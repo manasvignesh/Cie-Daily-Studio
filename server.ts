@@ -26,14 +26,24 @@ const projectId =
   process.env.FIREBASE_PROJECT_ID ||
   process.env.VITE_FIREBASE_PROJECT_ID ||
   "cie-connect";
-if (!getApps().length) {
-  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  initializeApp(
-    raw
-      ? { credential: cert(JSON.parse(raw)), projectId }
-      : { projectId },
-  );
+let firebaseAdminInitializationError: unknown;
+function ensureFirebaseAdmin() {
+  if (getApps().length) return;
+  try {
+    const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+    initializeApp(
+      raw
+        ? { credential: cert(JSON.parse(raw)), projectId }
+        : { projectId },
+    );
+    firebaseAdminInitializationError = undefined;
+  } catch (error) {
+    firebaseAdminInitializationError = error;
+    console.error("[firebase-admin] initialization failed", error);
+    throw error;
+  }
 }
+try { ensureFirebaseAdmin(); } catch { /* Keep the API alive to return JSON diagnostics. */ }
 const app = express();
 app.use(express.json({ limit: "4mb" }));
 
@@ -54,6 +64,7 @@ async function requireAuth(
   const token = bearer(req);
   if (!token) return void res.status(401).json({ error: "unauthenticated" });
   try {
+    ensureFirebaseAdmin();
     const decoded = await getAuth().verifyIdToken(token, true);
     req.firebaseUser = {
       uid: decoded.uid,
@@ -366,10 +377,20 @@ function editorialFailure(res: Response, error: unknown) {
   if (error instanceof EditorialError) {
     return res.status(error.status).json({ error: error.code, message: error.message });
   }
-  console.error("[editorial] request failed", {
-    kind: error instanceof Error ? error.name : "unknown",
+  const technicalMessage = error instanceof Error ? error.message : String(error);
+  const credentialsUnavailable = Boolean(firebaseAdminInitializationError) ||
+    /default credentials|credential|app\/no-app|service account/i.test(technicalMessage);
+  console.error("[editorial] request failed", error);
+  if (credentialsUnavailable) {
+    return res.status(503).json({
+      error: "editorial_service_unavailable",
+      message: "Editorial stories could not be loaded.",
+    });
+  }
+  return res.status(500).json({
+    error: "editorial_operation_failed",
+    message: "Editorial stories could not be loaded.",
   });
-  return res.status(500).json({ error: "editorial_operation_failed" });
 }
 
 app.post("/api/editorial-ingest", requireIngestionSecret, async (req, res) => {
@@ -693,6 +714,15 @@ app.delete("/api/streams/:id", requireAuth, requireStaff, async (req: AuthedRequ
 
 // Keep API failures machine-readable. Without this guard, the SPA fallback can
 // return HTML for a mistyped or unavailable API route and obscure the real error.
+app.use("/api", (error: unknown, req: Request, res: Response, next: (error?: unknown) => void) => {
+  if (res.headersSent) return next(error);
+  console.error("[api] unhandled request failure", { method: req.method, path: req.originalUrl, error });
+  return res.status(500).json({
+    error: "service_unavailable",
+    message: "The requested service is temporarily unavailable.",
+  });
+});
+
 app.use("/api", (req, res) =>
   res.status(404).json({
     error: "api_route_not_found",
