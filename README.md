@@ -50,3 +50,7 @@ For provider resilience, configure `NVIDIA_API_KEY` and optionally
 uses a fallback credential only for authentication, rate-limit, connection,
 timeout, or upstream NVIDIA failures. Never expose these values through a
 `VITE_*` variable.
+
+`GEMINI_API_KEY` optionally enables a final cross-provider fallback through
+Google's OpenAI-compatible endpoint. Configure `GEMINI_MODEL` only when you
+need to override the stable `gemini-2.5-flash` default.

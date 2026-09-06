@@ -24,8 +24,10 @@ Set these on the deployed Admin backend (never in Vite-prefixed variables):
 NVIDIA_API_KEY=
 NVIDIA_API_KEY_2=
 NVIDIA_API_KEY_3=
+GEMINI_API_KEY=
 AI_BASE_URL=https://integrate.api.nvidia.com/v1
 AI_MODEL=meta/muse-glimmer-30b
+GEMINI_MODEL=gemini-2.5-flash
 EDITORIAL_INGEST_SECRET=<a long random secret>
 EDITORIAL_DOMAINS=Technology,Startups,AI & ML,Science,Engineering,India,Business
 FIREBASE_PROJECT_ID=cie-connect
@@ -35,6 +37,9 @@ FIREBASE_SERVICE_ACCOUNT_JSON=<Firebase service account JSON>
 The second and third NVIDIA keys are optional server-only fallbacks. They are
 used only when an earlier credential is rejected, rate-limited, times out, or
 the NVIDIA service returns a retryable upstream failure.
+
+`GEMINI_API_KEY` is an optional final fallback and is sent only to Google's
+official OpenAI-compatible Gemini endpoint. Keep it server-side.
 
 The checked-in `api/index.ts` and `vercel.json` expose the Express API on Vercel.
 Deploy the complete project, not only `dist`. The deployed endpoint is:

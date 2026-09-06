@@ -180,8 +180,13 @@ app.get("/api/health", async (_req, res) => {
     ok: firebaseReady,
     firebase: { projectId, adminReady: firebaseReady },
     ai: {
-      configured: nvidiaApiKeys().length > 0,
-      editorialProvider: nvidiaApiKeys().length ? "nvidia" : "not_configured",
+      configured: nvidiaApiKeys().length > 0 || geminiApiKeys().length > 0,
+      editorialProvider: nvidiaApiKeys().length
+        ? "nvidia"
+        : geminiApiKeys().length
+          ? "gemini"
+          : "not_configured",
+      fallbackConfigured: nvidiaApiKeys().length > 1 || geminiApiKeys().length > 0,
     },
     livekit: {
       configured: !!(
@@ -204,12 +209,22 @@ function nvidiaApiKeys() {
   ].map((value) => String(value || "").trim()).filter(Boolean))];
 }
 
+function geminiApiKeys() {
+  return [...new Set([
+    process.env.GEMINI_API_KEY,
+    process.env.GEMINI_API_KEY_2,
+  ].map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
 function canTryAnotherNvidiaKey(error: unknown) {
   const value = error as { status?: number; code?: string };
   const status = Number(value?.status || 0);
   const code = String(value?.code || "").toLowerCase();
-  return status === 401 || status === 403 || status === 408 || status === 429 ||
-    status >= 500 || /timeout|connection|rate_limit/.test(code);
+  const message = error instanceof Error ? error.message : "";
+  return status === 400 || status === 401 || status === 403 || status === 404 ||
+    status === 408 || status === 429 || status >= 500 ||
+    /timeout|connection|rate_limit/.test(code) ||
+    /empty_ai_response|invalid_generated_json|generated_schema_missing/.test(message);
 }
 
 function parseGeneratedArticle(raw: string) {
@@ -264,23 +279,39 @@ async function generateArticle(
   category: string,
   validationFeedback: string[] = [],
 ) {
-  const apiKeys = nvidiaApiKeys();
-  if (!apiKeys.length) throw new Error("ai_not_configured");
+  const providers = [
+    ...nvidiaApiKeys().map((apiKey) => ({
+      name: "nvidia",
+      apiKey,
+      baseURL: process.env.AI_BASE_URL || "https://integrate.api.nvidia.com/v1",
+      model: process.env.AI_MODEL || "meta/muse-glimmer-30b",
+    })),
+    ...geminiApiKeys().map((apiKey) => ({
+      name: "gemini",
+      apiKey,
+      baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
+      model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+    })),
+  ];
+  if (!providers.length) throw new Error("ai_not_configured");
   const retryNote = validationFeedback.length
     ? `\nThe previous output failed these checks. Correct them without adding facts:\n- ${validationFeedback.join("\n- ")}`
     : "";
-  const timeout = apiKeys.length === 1 ? 45_000 : Math.max(12_000, Math.floor(50_000 / apiKeys.length));
+  const timeout = providers.length === 1
+    ? 45_000
+    : Math.max(8_000, Math.floor(50_000 / providers.length));
   let lastError: unknown;
-  for (let index = 0; index < apiKeys.length; index += 1) {
+  for (let index = 0; index < providers.length; index += 1) {
+    const provider = providers[index];
     try {
       const ai = new OpenAI({
-        apiKey: apiKeys[index],
-        baseURL: process.env.AI_BASE_URL || "https://integrate.api.nvidia.com/v1",
+        apiKey: provider.apiKey,
+        baseURL: provider.baseURL,
         timeout,
         maxRetries: 0,
       });
       const result = await ai.chat.completions.create({
-        model: process.env.AI_MODEL || "meta/muse-glimmer-30b",
+        model: provider.model,
         temperature: 0.1,
         max_tokens: 5000,
         response_format: { type: "json_object" },
@@ -297,9 +328,10 @@ async function generateArticle(
       return normalizeGeneratedArticle(parseGeneratedArticle(text));
     } catch (error) {
       lastError = error;
-      if (index === apiKeys.length - 1 || !canTryAnotherNvidiaKey(error)) throw error;
+      if (index === providers.length - 1 || !canTryAnotherNvidiaKey(error)) throw error;
       const value = error as { status?: number; code?: string };
-      console.warn("[nvidia] retrying with fallback credential", {
+      console.warn("[article-generation] retrying with fallback provider", {
+        provider: provider.name,
         attempt: index + 1,
         status: value?.status,
         code: value?.code,
@@ -327,7 +359,7 @@ app.post(
     const source = String(req.body?.sourceText || "").trim();
     if (source.length < 80)
       return res.status(400).json({ error: "source_too_short" });
-    if (!nvidiaApiKeys().length)
+    if (!nvidiaApiKeys().length && !geminiApiKeys().length)
       return res.status(503).json({ error: "ai_not_configured" });
     try {
       const article = await generatePublishableArticle(
