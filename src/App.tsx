@@ -1058,8 +1058,18 @@ function ArticleEditor() {
           category: article.quick_brief.category,
         }),
       });
-      const j = await r.json();
-      if (!r.ok) throw new Error([j.error, j.detail].filter(Boolean).join(": "));
+      const responseText = await r.text();
+      let j: any = {};
+      try {
+        j = responseText ? JSON.parse(responseText) : {};
+      } catch {
+        j = {};
+      }
+      if (!r.ok || !j.article) {
+        throw new Error(
+          j.message || "Article generation couldn't finish. Please try again.",
+        );
+      }
       setArticle((a) => ({
         ...a,
         quick_brief: j.article.quick_brief,

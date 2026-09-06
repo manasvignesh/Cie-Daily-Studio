@@ -211,6 +211,37 @@ function parseGeneratedArticle(raw: string) {
   return article as Pick<Article, "quick_brief" | "full_article">;
 }
 
+function normalizeGeneratedArticle(
+  article: Pick<Article, "quick_brief" | "full_article">,
+): Pick<Article, "quick_brief" | "full_article"> {
+  const quickBrief = article.quick_brief;
+  const fullArticle = article.full_article;
+  const suppliedTakeaways = Array.isArray(fullArticle.takeaways)
+    ? fullArticle.takeaways.filter((value) => String(value || "").trim())
+    : [];
+  const fallbackTakeaways = Array.isArray(quickBrief.three_things_to_know)
+    ? quickBrief.three_things_to_know.filter((value) => String(value || "").trim()).slice(0, 3)
+    : [];
+  return {
+    quick_brief: {
+      ...quickBrief,
+      three_things_to_know: Array.isArray(quickBrief.three_things_to_know)
+        ? quickBrief.three_things_to_know
+        : [],
+      key_number: quickBrief.key_number ?? null,
+    },
+    full_article: {
+      ...fullArticle,
+      key_stats: Array.isArray(fullArticle.key_stats) ? fullArticle.key_stats : [],
+      explore_sections: Array.isArray(fullArticle.explore_sections)
+        ? fullArticle.explore_sections
+        : [],
+      takeaways: suppliedTakeaways.length >= 3 ? suppliedTakeaways : fallbackTakeaways,
+      quote: fullArticle.quote ?? null,
+    },
+  };
+}
+
 async function generateArticle(
   source: string,
   category: string,
@@ -221,6 +252,8 @@ async function generateArticle(
   const ai = new OpenAI({
     apiKey,
     baseURL: process.env.AI_BASE_URL || "https://integrate.api.nvidia.com/v1",
+    timeout: 45_000,
+    maxRetries: 0,
   });
   const retryNote = validationFeedback.length
     ? `\nThe previous output failed these checks. Correct them without adding facts:\n- ${validationFeedback.join("\n- ")}`
@@ -240,18 +273,14 @@ async function generateArticle(
   });
   const text = result.choices[0]?.message?.content;
   if (!text) throw new Error("empty_ai_response");
-  return parseGeneratedArticle(text);
+  return normalizeGeneratedArticle(parseGeneratedArticle(text));
 }
 
 async function generatePublishableArticle(source: string, category: string) {
-  let feedback: string[] = [];
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const article = await generateArticle(source, category, feedback);
-    const issues = validateArticle(article);
-    if (!issues.length) return article;
-    feedback = issues.map((issue) => `${issue.path}: ${issue.message}`);
-  }
-  throw new Error("generated_article_failed_contract");
+  const article = await generateArticle(source, category);
+  const errors = validateArticle(article).filter((issue) => issue.level === "error");
+  if (errors.length) throw new Error("generated_article_failed_contract");
+  return article;
 }
 app.post(
   "/api/generate-article",
@@ -269,13 +298,12 @@ app.post(
         String(req.body?.category || "General"),
       );
       return res.json({ article });
-    } catch (error: any) {
-      return res
-        .status(502)
-        .json({
-          error: "generation_failed",
-          detail: error?.message?.slice(0, 160) || "unknown",
-        });
+    } catch (error) {
+      console.error("[article-generation] request failed", error);
+      return res.status(502).json({
+        error: "generation_failed",
+        message: "Article generation couldn't finish. Please try again.",
+      });
     }
   },
 );
