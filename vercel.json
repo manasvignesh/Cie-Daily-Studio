@@ -4,7 +4,7 @@
   "functions": {
     "api/index.ts": {
       "maxDuration": 60,
-      "includeFiles": ["server.ts", "src/lib/**"]
+      "includeFiles": "{server.ts,src/lib/**}"
     }
   },
   "rewrites": [
