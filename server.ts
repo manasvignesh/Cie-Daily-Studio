@@ -165,10 +165,19 @@ async function requireStaff(
   }
 }
 
-app.get("/api/health", (_req, res) =>
-  res.json({
-    ok: true,
-    firebase: { projectId, auth: true },
+app.get("/api/health", async (_req, res) => {
+  let firebaseReady = false;
+  try {
+    ensureFirebaseAdmin();
+    await getFirestore().collection("editorial_queue").limit(1).get();
+    firebaseReady = true;
+  } catch (error) {
+    console.error("[health] Firebase Admin check failed", error);
+  }
+
+  return res.status(firebaseReady ? 200 : 503).json({
+    ok: firebaseReady,
+    firebase: { projectId, adminReady: firebaseReady },
     ai: {
       configured: !!process.env.NVIDIA_API_KEY,
       editorialProvider: process.env.NVIDIA_API_KEY ? "nvidia" : "not_configured",
@@ -180,8 +189,8 @@ app.get("/api/health", (_req, res) =>
         (process.env.LIVEKIT_URL || process.env.VITE_LIVEKIT_URL)
       ),
     },
-  }),
-);
+  });
+});
 
 const prompt = `You are the editorial engine for CIE Daily. Structure only the supplied reporting; do not add outside knowledge. Never invent or alter numbers, dates, names, locations, quotes, company names, capacities, targets, or statistics. If a detail is absent, omit it. Return strict JSON with exactly two independent representations: quick_brief and full_article. quick_brief has category, headline, quick_summary (35-60 words), three_things_to_know (exactly 3 concise facts), key_number ({value,label} or null). full_article has headline, hook, in_20_seconds, what_happened (60+ words), why_this_matters (50+ words), bigger_picture, key_stats (array of {value,label}), explore_sections (3-6 story-specific sections, each with title, summary, content, items [{title,description}]), takeaways (3-5), quote ({text,speaker,role} or null). Do not copy the brief into the full article. Output JSON only.`;
 
@@ -717,6 +726,12 @@ app.delete("/api/streams/:id", requireAuth, requireStaff, async (req: AuthedRequ
 app.use("/api", (error: unknown, req: Request, res: Response, next: (error?: unknown) => void) => {
   if (res.headersSent) return next(error);
   console.error("[api] unhandled request failure", { method: req.method, path: req.originalUrl, error });
+  if (error instanceof SyntaxError && (error as SyntaxError & { status?: number }).status === 400) {
+    return res.status(400).json({
+      error: "invalid_json",
+      message: "The request body must contain valid JSON.",
+    });
+  }
   return res.status(500).json({
     error: "service_unavailable",
     message: "The requested service is temporarily unavailable.",

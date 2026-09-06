@@ -43,6 +43,16 @@ test("serverless Live API: auth, room validation and presenter/listener grants",
     const health = await fetch(`${origin}/api/health`);
     assert.equal((await health.json()).livekit.configured, true);
     assert.equal((await fetch(`${origin}/api/missing`)).status, 404);
+    const invalidJson = await fetch(`${origin}/api/editorial-ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{",
+    });
+    assert.equal(invalidJson.status, 400);
+    assert.deepEqual(await invalidJson.json(), {
+      error: "invalid_json",
+      message: "The request body must contain valid JSON.",
+    });
     record = { role: "admin" };
     const editorial = await fetch(`${origin}/api/editorial`, {
       headers: { Authorization: "Bearer verified-in-test" },
