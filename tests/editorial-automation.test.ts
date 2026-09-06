@@ -4,11 +4,21 @@ import { test } from 'node:test';
 import {
   EditorialError,
   EditorialService,
+  classifyEditorialFailure,
+  safeEditorialFailureMessage,
   type EditorialQueueItem,
   type EditorialStore,
   type IngestStory,
 } from '../src/lib/editorial-automation';
 import type { Article } from '../src/lib/types';
+
+test('classifies editorial failures without exposing provider details', () => {
+  assert.equal(classifyEditorialFailure(new Error('NVIDIA 429 rate limit')), 'ai_generation_failed');
+  assert.equal(classifyEditorialFailure(new Error('invalid_generated_json')), 'schema_validation_failed');
+  assert.equal(classifyEditorialFailure(new Error('Firestore permission-denied')), 'firebase_write_failed');
+  assert.equal(classifyEditorialFailure(Object.assign(new Error('deadline exceeded'), { code: 504 })), 'timeout');
+  assert.equal(safeEditorialFailureMessage('firebase_write_failed'), 'The editorial queue could not be saved.');
+});
 
 const story: IngestStory = {
   title: 'Indian students build a low-cost satellite communications platform',

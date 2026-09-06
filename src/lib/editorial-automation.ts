@@ -81,6 +81,68 @@ export class EditorialError extends Error {
   }
 }
 
+export type EditorialFailureCategory =
+  | 'ai_generation_failed'
+  | 'firebase_write_failed'
+  | 'schema_validation_failed'
+  | 'duplicate'
+  | 'timeout'
+  | 'configuration_missing'
+  | 'invalid_payload'
+  | 'processing_failed';
+
+/**
+ * Converts provider/database exceptions into a small, safe diagnostic vocabulary.
+ * The original exception is still logged by the server, but never returned to a
+ * caller or persisted in the editorial queue.
+ */
+export function classifyEditorialFailure(error: unknown): EditorialFailureCategory {
+  if (error instanceof EditorialError) {
+    if (error.code === 'invalid_payload') return 'invalid_payload';
+    if (error.code === 'duplicate') return 'duplicate';
+  }
+  const value = error as { code?: unknown; status?: unknown; name?: unknown };
+  const code = String(value?.code || '').toLowerCase();
+  const name = String(value?.name || '').toLowerCase();
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error || '').toLowerCase();
+  if (/timeout|timed.?out|deadline|aborted|aborterror/.test(`${code} ${name} ${message}`)) {
+    return 'timeout';
+  }
+  if (/invalid_generated_json|generated_schema_missing|failed validation|schema_validation/.test(message)) {
+    return 'schema_validation_failed';
+  }
+  if (/ai_not_configured|nvidia|gemini|openai|empty_ai_response|generation_failed|chat\.completions/.test(`${code} ${name} ${message}`)) {
+    return /ai_not_configured|not configured|missing.*(key|secret)|api key/.test(message)
+      ? 'configuration_missing'
+      : 'ai_generation_failed';
+  }
+  if (/firebase|firestore|google.?cloud|permission-denied|failed-precondition|unavailable|service account|default credentials/.test(`${code} ${name} ${message}`)) {
+    return 'firebase_write_failed';
+  }
+  return 'processing_failed';
+}
+
+export function safeEditorialFailureMessage(category: EditorialFailureCategory) {
+  switch (category) {
+    case 'ai_generation_failed':
+      return 'The AI generation service could not produce this story.';
+    case 'firebase_write_failed':
+      return 'The editorial queue could not be saved.';
+    case 'schema_validation_failed':
+      return 'The generated article did not match the required schema.';
+    case 'timeout':
+      return 'Editorial processing timed out. Retry the story.';
+    case 'configuration_missing':
+      return 'Editorial generation is not configured on the server.';
+    case 'invalid_payload':
+      return 'The submitted story did not pass validation.';
+    case 'duplicate':
+      return 'This story was already submitted.';
+    default:
+      return 'Story processing failed.';
+  }
+}
+
 const defaultDomains = [
   'AI & ML',
   'Business',
@@ -240,11 +302,11 @@ export function articleValidationErrors(article: Article) {
 }
 
 function safeFailure(error: unknown) {
-  if (error instanceof EditorialError) return error.message.slice(0, 240);
-  if (error instanceof Error && error.message.startsWith('Generated article failed validation:')) {
-    return error.message.slice(0, 240);
+  const category = classifyEditorialFailure(error);
+  if (category === 'schema_validation_failed' && error instanceof Error) {
+    return `${category}: ${error.message.slice(0, 200)}`;
   }
-  return 'The generation service could not produce a valid article. Retry from the Editorial Inbox.';
+  return `${category}: ${safeEditorialFailureMessage(category)}`;
 }
 
 export class EditorialService {

@@ -15,6 +15,8 @@ import OpenAI from "openai";
 import {
   EditorialError,
   EditorialService,
+  classifyEditorialFailure,
+  safeEditorialFailureMessage,
   sourceText,
   type EditorialQueueItem,
   type EditorialStore,
@@ -576,12 +578,27 @@ app.post("/api/editorial-ingest", requireIngestionSecret, async (req, res) => {
           kind: item.duplicate.kind,
         });
       }
-      results.push({ ok: true, id: item.id, status: item.status, duplicate: item.duplicate });
+      if (item.status === "failed") {
+        const category = classifyEditorialFailure(new Error(item.failureReason || "processing failed"));
+        console.warn("[editorial] story processing failed", { queueId: item.id, category });
+        results.push({
+          ok: false,
+          id: item.id,
+          status: item.status,
+          error: category,
+          message: safeEditorialFailureMessage(category),
+          duplicate: item.duplicate,
+        });
+      } else {
+        results.push({ ok: true, id: item.id, status: item.status, duplicate: item.duplicate });
+      }
     } catch (error) {
+      const category = classifyEditorialFailure(error);
+      console.error("[editorial] story processing exception", { category, error });
       results.push({
         ok: false,
-        error: error instanceof EditorialError ? error.code : "processing_failed",
-        message: error instanceof EditorialError ? error.message : "Story processing failed",
+        error: category,
+        message: error instanceof EditorialError ? error.message : safeEditorialFailureMessage(category),
       });
     }
   }
