@@ -413,8 +413,12 @@ const firestoreEditorialStore: EditorialStore = {
     return snapshot.docs.map((document) => queueItem(document.id, document.data()));
   },
   async create(item) {
+    const source = Object.fromEntries(
+      Object.entries(item.source).filter(([, value]) => value !== undefined),
+    );
     const reference = await getFirestore().collection("editorial_queue").add({
       ...item,
+      source,
       receivedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
