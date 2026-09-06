@@ -19,8 +19,8 @@ import {
   type EditorialQueueItem,
   type EditorialStore,
   type IngestStory,
-} from "./src/lib/editorial-automation";
-import type { Article } from "./src/lib/types";
+} from "./src/lib/editorial-automation.ts";
+import type { Article } from "./src/lib/types.ts";
 
 const projectId =
   process.env.FIREBASE_PROJECT_ID ||
