@@ -4,17 +4,18 @@
 
 `POST /api/editorial-ingest` validates each story, checks `editorial_queue` for
 duplicates, creates a `discovered` queue item, and returns its ID without
-waiting for NVIDIA. A scheduled GitHub worker invokes `/api/editorial-worker`, which atomically
-claims pending or stale items, runs the existing NVIDIA article formatter,
+waiting for AI generation. A scheduled GitHub worker invokes `/api/editorial-worker`, which atomically
+claims one pending or stale item per HTTP request, runs the existing Gemini-first
+article formatter,
 validates the canonical schema-v2 output, and stops at `ready_for_review`.
 A Studio editor then reviews, edits, regenerates, rejects, or approves the item.
 Approval uses the same `toPublishedPost` contract as manual articles and creates
 one `posts/{id}` document consumed by the app and website.
 
 Both the manual Generate button and automated editorial ingestion call the same
-server-side `generateArticle` function. They therefore use the same NVIDIA model,
-prompt, JSON parser, and `quick_brief` + `full_article` schema. There is no second
-AI provider in the automation path.
+server-side `generateArticle` function. They therefore use the same Gemini-primary,
+NVIDIA-fallback model, prompt, JSON parser, and `quick_brief` + `full_article`
+schema.
 
 No story is automatically published.
 
@@ -46,8 +47,11 @@ Keep all provider keys server-side.
 The checked-in `api/index.ts` exposes the Express API and the repository's
 `.github/workflows/editorial-worker.yml` invokes the worker every five minutes.
 It reuses the Actions `EDITORIAL_INGEST_SECRET` for worker authentication, so no
-new Vercel secret is required. Each invocation atomically claims up to three stories,
-processes them sequentially to avoid provider bursts, and retries stale
+new Vercel secret is required. Each HTTP invocation atomically claims exactly one
+story. The scheduled workflow makes up to three sequential HTTP invocations and
+stops early when the endpoint reports no work, avoiding Vercel's single-invocation
+timeout while still draining up to three stories per workflow run. The workflow also
+triggers automatically after a successful editorial-ingest workflow. It retries stale
 processing items after five minutes, and always records `failed` on timeout or
 provider failure.
 Deploy the complete project, not only `dist`. The deployed endpoint is:

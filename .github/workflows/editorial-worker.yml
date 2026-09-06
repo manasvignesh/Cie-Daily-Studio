@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+  workflow_run:
+    workflows: ["CIE Daily editorial ingest"]
+    types: [completed]
 
 permissions:
   contents: read
@@ -14,12 +17,56 @@ concurrency:
 
 jobs:
   process:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
-      - name: Process up to three pending editorial items
+      - name: Process up to three pending editorial items in separate invocations
         env:
           EDITORIAL_WORKER_SECRET: ${{ secrets.EDITORIAL_INGEST_SECRET }}
-        run: >-
-          curl --fail-with-body --silent --show-error
-          -H "Authorization: Bearer ${EDITORIAL_WORKER_SECRET}"
-          https://cie-daily-studio.vercel.app/api/editorial-worker
+        run: |
+          set +e
+          processed=0
+          ready=0
+          failed=0
+          empty=0
+          errors=0
+          for attempt in 1 2 3; do
+            response_file="$(mktemp)"
+            status=$(curl --silent --show-error --max-time 55 \
+              -o "$response_file" -w "%{http_code}" \
+              -H "Authorization: Bearer ${EDITORIAL_WORKER_SECRET}" \
+              https://cie-daily-studio.vercel.app/api/editorial-worker)
+            if [ "$status" != "200" ]; then
+              echo "Worker invocation ${attempt} returned HTTP ${status}; continuing."
+              errors=$((errors + 1))
+              rm -f "$response_file"
+              continue
+            fi
+            values=$(node -e '
+              const fs = require("fs");
+              const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+              process.stdout.write([data.processed || 0, data.ready || 0, data.failed || 0].join(" "));
+            ' "$response_file" 2>/dev/null)
+            if [ $? -ne 0 ]; then
+              echo "Worker invocation ${attempt} returned invalid JSON; continuing."
+              errors=$((errors + 1))
+              rm -f "$response_file"
+              continue
+            fi
+            read one_processed one_ready one_failed <<< "$values"
+            processed=$((processed + one_processed))
+            ready=$((ready + one_ready))
+            failed=$((failed + one_failed))
+            if [ "$one_processed" -eq 0 ]; then
+              empty=$((empty + 1))
+              rm -f "$response_file"
+              break
+            fi
+            rm -f "$response_file"
+          done
+          echo "Editorial worker summary: processed=${processed} ready_for_review=${ready} failed=${failed} empty=${empty} invocation_errors=${errors}"
+          if [ "$processed" -eq 0 ] && [ "$empty" -eq 0 ] && [ "$errors" -gt 0 ]; then
+            exit 1
+          fi

@@ -317,9 +317,9 @@ async function generateArticle(
   const retryNote = validationFeedback.length
     ? `\nThe previous output failed these checks. Correct them without adding facts:\n- ${validationFeedback.join("\n- ")}`
     : "";
-  const timeout = providers.length === 1
-    ? 45_000
-    : Math.max(8_000, Math.floor(50_000 / providers.length));
+  // Keep provider calls well below Vercel's 60-second function budget so a
+  // fallback (or terminal failure write) still has time to complete.
+  const timeout = 18_000;
   let lastError: unknown;
   for (let index = 0; index < providers.length; index += 1) {
     const provider = providers[index];
@@ -721,9 +721,9 @@ app.get("/api/editorial-worker", requireEditorialWorker, async (_req, res) => {
         const timestamp = started ? Date.parse(String(started)) : 0;
         return !timestamp || Date.now() - timestamp >= editorialProcessingStaleAfterMs;
       })
-      .slice(0, 3);
+      .slice(0, 1);
     if (!candidates.length) return res.json({ ok: true, processed: 0, message: "No pending editorial items." });
-    const results = await editorialService.processBatch(candidates, 3);
+    const results = await editorialService.processBatch(candidates, 1);
     const remaining = (await firestoreEditorialStore.listRecent(100)).filter((item) =>
       !item.duplicate && (item.status === "discovered" || item.status === "processing"));
     return res.json({
