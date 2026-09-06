@@ -1,0 +1,89 @@
+name: CIE Daily editorial ingest
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Existing issue number to process manually
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: cie-editorial-ingest-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    if: >-
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event.label.name == 'cie-editorial-ingest')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out bridge
+        uses: actions/checkout@v4
+
+      - name: Read and submit canonical issue JSON
+        id: ingest
+        continue-on-error: true
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title || format('manual issue {0}', inputs.issue_number) }}
+          ISSUE_BODY: ${{ github.event.issue.body || '' }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+          EDITORIAL_INGEST_SECRET: ${{ secrets.EDITORIAL_INGEST_SECRET }}
+        run: node scripts/editorial-ingest-issue.mjs
+
+      - name: Comment and close successful issue
+        uses: actions/github-script@v7
+        env:
+          INGEST_OUTCOME: ${{ steps.ingest.outcome }}
+          SUCCESS_COUNT: ${{ steps.ingest.outputs.success_count }}
+          FAILURE_COUNT: ${{ steps.ingest.outputs.failure_count }}
+          QUEUE_IDS: ${{ steps.ingest.outputs.queue_ids }}
+          DIAGNOSTIC: ${{ steps.ingest.outputs.diagnostic }}
+          SHOULD_CLOSE: ${{ steps.ingest.outputs.should_close }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+        with:
+          script: |
+            const issue_number = Number(process.env.ISSUE_NUMBER);
+            const success = Number(process.env.SUCCESS_COUNT || 0);
+            const failure = Number(process.env.FAILURE_COUNT || 0);
+            const queueIds = process.env.QUEUE_IDS || 'none';
+            const diagnostic = process.env.DIAGNOSTIC || 'No diagnostic returned.';
+            const failed = process.env.INGEST_OUTCOME !== 'success' || failure > 0;
+            const lines = [
+              '## CIE Daily editorial ingest',
+              '',
+              failed ? '❌ Ingestion failed; this issue remains open.' : '✅ Ingestion completed; this issue is ready for editorial review.',
+              '',
+              `- Successful stories: ${success}`,
+              `- Failed stories: ${failure}`,
+              `- Queue IDs: ${queueIds}`,
+              `- Published automatically: **no**`,
+            ];
+            if (failed) lines.push('', `Diagnostic: ${diagnostic}`);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: lines.join('\n'),
+            });
+            if (!failed && process.env.SHOULD_CLOSE === 'true') {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number,
+                state: 'closed',
+              });
+            }
+
+      - name: Fail the workflow when ingestion failed
+        if: steps.ingest.outcome != 'success'
+        run: |
+          echo "Editorial ingestion failed; issue left open for correction."
+          exit 1

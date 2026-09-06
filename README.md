@@ -50,6 +50,9 @@ ChatGPT scheduled-task and custom-action integration is documented in
 `submit_editorial_story` queue action and deliberately provides no approval or
 publishing capability.
 
+If the scheduler should submit through GitHub instead, use the labeled-issue
+bridge documented in [GITHUB_EDITORIAL_BRIDGE.md](./GITHUB_EDITORIAL_BRIDGE.md).
+
 For provider resilience, configure `NVIDIA_API_KEY` and optionally
 `NVIDIA_API_KEY_2` / `NVIDIA_API_KEY_3` as server-only variables. The server
 uses a fallback credential only for authentication, rate-limit, connection,

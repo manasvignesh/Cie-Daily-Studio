@@ -109,3 +109,8 @@ or make authenticated outbound POST requests in every product/environment. If th
 scheduler cannot send the request directly, use the smallest bridge: a scheduled
 GitHub Action, Cloud Scheduler job, Make/Zapier webhook, or tiny trusted function
 that holds `EDITORIAL_INGEST_SECRET` server-side and forwards the JSON payload.
+
+The repository's GitHub labeled-issue bridge is documented in
+[GITHUB_EDITORIAL_BRIDGE.md](./GITHUB_EDITORIAL_BRIDGE.md). It validates a
+canonical issue body, forwards it with the Actions secret, comments counts, and
+closes only fully successful issues. It never approves or publishes.
