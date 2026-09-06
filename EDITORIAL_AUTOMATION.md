@@ -4,7 +4,7 @@
 
 `POST /api/editorial-ingest` validates each story, checks `editorial_queue` for
 duplicates, creates a `discovered` queue item, and returns its ID without
-waiting for NVIDIA. Vercel Cron invokes `/api/editorial-worker`, which atomically
+waiting for NVIDIA. A scheduled GitHub worker invokes `/api/editorial-worker`, which atomically
 claims pending or stale items, runs the existing NVIDIA article formatter,
 validates the canonical schema-v2 output, and stops at `ready_for_review`.
 A Studio editor then reviews, edits, regenerates, rejects, or approves the item.
@@ -44,9 +44,10 @@ the NVIDIA service returns a retryable upstream failure.
 `GEMINI_API_KEY` is an optional final fallback and is sent only to Google's
 official OpenAI-compatible Gemini endpoint. Keep it server-side.
 
-The checked-in `api/index.ts` and `vercel.json` expose the Express API and a
-once-per-minute worker on Vercel. Set `CRON_SECRET` in Vercel so Cron requests
-are authenticated. The worker claims one story per invocation, retries stale
+The checked-in `api/index.ts` exposes the Express API and the repository's
+`.github/workflows/editorial-worker.yml` invokes the worker every five minutes.
+It reuses the Actions `EDITORIAL_INGEST_SECRET` for worker authentication, so no
+new Vercel secret is required. The worker claims one story per invocation, retries stale
 processing items after five minutes, and always records `failed` on timeout or
 provider failure.
 Deploy the complete project, not only `dist`. The deployed endpoint is:

@@ -531,7 +531,7 @@ function requireIngestionSecret(req: Request, res: Response, next: () => void) {
 }
 
 function requireEditorialWorker(req: Request, res: Response, next: () => void) {
-  const configured = process.env.CRON_SECRET || process.env.EDITORIAL_WORKER_SECRET || "";
+  const configured = process.env.CRON_SECRET || process.env.EDITORIAL_WORKER_SECRET || process.env.EDITORIAL_INGEST_SECRET || "";
   if (!configured) return void res.status(503).json({ error: "worker_not_configured" });
   const token = bearer(req);
   if (!token || !secureTokenMatches(token, configured)) {

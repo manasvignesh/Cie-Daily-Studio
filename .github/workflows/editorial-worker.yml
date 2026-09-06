@@ -1,0 +1,25 @@
+name: CIE Daily editorial worker
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cie-editorial-worker
+  cancel-in-progress: false
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Process one pending editorial item
+        env:
+          EDITORIAL_WORKER_SECRET: ${{ secrets.EDITORIAL_INGEST_SECRET }}
+        run: >-
+          curl --fail-with-body --silent --show-error
+          -H "Authorization: Bearer ${EDITORIAL_WORKER_SECRET}"
+          https://cie-daily-studio.vercel.app/api/editorial-worker

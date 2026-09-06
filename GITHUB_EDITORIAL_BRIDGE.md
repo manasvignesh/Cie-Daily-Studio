@@ -9,7 +9,7 @@ Labeled GitHub issue
   -> GitHub Action validates the body
   -> POST /api/editorial-ingest with EDITORIAL_INGEST_SECRET
   -> editorial_queue (discovered)
-  -> Vercel Cron worker (processing)
+  -> scheduled GitHub worker (processing)
   -> existing NVIDIA generation
   -> ready_for_review
   -> human review in Studio
@@ -83,7 +83,7 @@ HTTP(S) URLs and source-supported facts.
 - Leaves failed or partially failed issues open with a safe diagnostic.
 
 The production ingestion endpoint performs validation and duplicate detection
-only. It returns quickly after queue creation. Vercel Cron calls the worker,
+only. It returns quickly after queue creation. The scheduled GitHub worker calls the worker,
 which claims items safely, calls the same NVIDIA generation service as manual
 Generate, validates the Swipe Deck and Full Story schema, recovers stale claims,
 and stops at `ready_for_review`.
