@@ -317,13 +317,15 @@ async function generateArticle(
   const retryNote = validationFeedback.length
     ? `\nThe previous output failed these checks. Correct them without adding facts:\n- ${validationFeedback.join("\n- ")}`
     : "";
-  // Each process() may make two provider attempts, and each provider call may
-  // try Gemini then NVIDIA. Keep the per-call budget low enough that fallback,
-  // retry, and the terminal Firestore write all finish before Vercel's limit.
-  const timeout = 10_000;
+  // Bound the entire provider chain, not just one HTTP call. A process() may
+  // retry generation, so each chain must leave time for the terminal write.
+  const generationDeadline = Date.now() + 20_000;
   let lastError: unknown;
   for (let index = 0; index < providers.length; index += 1) {
     const provider = providers[index];
+    const remaining = generationDeadline - Date.now();
+    if (remaining <= 500) break;
+    const timeout = Math.min(10_000, Math.max(1_000, remaining - 500));
     try {
       const ai = new OpenAI({
         apiKey: provider.apiKey,
