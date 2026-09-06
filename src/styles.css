@@ -180,6 +180,18 @@
 .editorialImageEditor h3 { margin: 3px 0; }
 .editorialImageEditor p:not(.eyebrow) { color: var(--muted); margin: 0; }
 .editorialImageEditor input { width: 100%; }
+.editorialImageEditor .buttonLike {
+  min-height: 32px;
+  border: 1px solid #343437;
+  background: #1b1b1d;
+  border-radius: 6px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font: 700 10px Manrope;
+}
 @media (max-width: 760px) {
   .editorialImageEditor { grid-template-columns: 1fr; }
 }

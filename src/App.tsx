@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type ChangeEvent,
   type ReactNode,
 } from "react";
 import {
@@ -759,6 +760,24 @@ function EditorialReview({
       ...(imageUrl ? { mediaUrls: [imageUrl, ...(current.mediaUrls || []).filter((url) => url !== imageUrl)] } : { imageUrl: undefined, mediaUrls: [] }),
     }));
   }
+  async function uploadReplacement(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/") || file.size > 10 * 1024 * 1024) {
+      setMessage("Choose an image up to 10 MB.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const uploaded = await uploadBytes(ref(storage, `editorial/${item.id}/cover-${Date.now()}-${file.name}`), file);
+      replaceImage(await getDownloadURL(uploaded.ref));
+      setMessage("Replacement image ready. Save edits to keep it.");
+    } catch {
+      setMessage("The replacement image could not be uploaded.");
+    } finally {
+      setSaving(false);
+    }
+  }
   async function saveEdits() {
     if (issues.some((issue) => issue.level === "error")) {
       setMessage("Resolve validation errors before saving.");
@@ -793,6 +812,7 @@ function EditorialReview({
         <section className="panel editorialImageEditor">
           <div><p className="eyebrow">ARTICLE IMAGE</p><h3>{draft.imageUrl ? "Cover image ready" : "No source image"}</h3><p>{draft.imageUrl ? "Replace it with a verified article image URL if needed." : "Provide a direct image URL before publishing if the source has no usable image."}</p></div>
           <input aria-label="Replace image URL" placeholder="https://…/hero-image.jpg" defaultValue={draft.imageUrl || ""} onBlur={(event) => replaceImage(event.currentTarget.value)} />
+          <label className="buttonLike">Upload image<input type="file" accept="image/*" onChange={(event) => void uploadReplacement(event)} hidden /></label>
           <button onClick={() => replaceImage("")} disabled={!draft.imageUrl}>Remove image</button>
         </section>
         {mode === "preview" ? (
