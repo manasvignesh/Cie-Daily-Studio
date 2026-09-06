@@ -7,7 +7,6 @@
       "includeFiles": "{server.ts,src/lib/**}"
     }
   },
-  "crons": [{ "path": "/api/editorial-worker", "schedule": "*/1 * * * *" }],
   "rewrites": [
     { "source": "/api/:path*", "destination": "/api/index" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }

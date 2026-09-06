@@ -59,12 +59,11 @@ jobs:
             const lines = [
               '## CIE Daily editorial ingest',
               '',
-              failed ? '❌ Queueing failed; this issue remains open.' : '✅ Story queued for background generation; this issue is closed for tracking.',
+              failed ? '❌ Ingestion failed; this issue remains open.' : '✅ Ingestion completed; this issue is ready for editorial review.',
               '',
               `- Successful stories: ${success}`,
               `- Failed stories: ${failure}`,
               `- Queue IDs: ${queueIds}`,
-              `- Background generation: **scheduled**`,
               `- Published automatically: **no**`,
             ];
             if (failed) lines.push('', `Diagnostic: ${diagnostic}`);
