@@ -95,7 +95,9 @@ async function readApiJson(response: Response) {
   const text = await response.text();
   if (!text) {
     if (!response.ok) {
-      throw new Error(`Backend returned HTTP ${response.status} ${response.statusText}`.trim());
+      throw new Error(
+        `Backend returned HTTP ${response.status} ${response.statusText}`.trim(),
+      );
     }
     return {};
   }
@@ -592,12 +594,13 @@ async function editorialRequest(path: string, init: RequestInit = {}) {
   } catch {
     throw new Error("Editorial stories could not be loaded. Please try again.");
   }
-  if (!response.ok) throw new Error(body.message || body.error || "Editorial request failed.");
+  if (!response.ok)
+    throw new Error(body.message || body.error || "Editorial request failed.");
   return body;
 }
 
 const editorialStatusLabel: Record<string, string> = {
-  discovered: "Needs duplicate review",
+  discovered: "Queued",
   processing: "Generating",
   ready_for_review: "Ready for review",
   approved: "Publishing",
@@ -614,8 +617,8 @@ function EditorialInbox() {
     [selected, setSelected] = useState<EditorialQueueItem | null>(null),
     [busyId, setBusyId] = useState("");
 
-  async function load() {
-    setLoading(true);
+  async function load(showLoading = true) {
+    if (showLoading) setLoading(true);
     setError("");
     try {
       const body = await editorialRequest("/api/editorial");
@@ -628,13 +631,20 @@ function EditorialInbox() {
   }
   useEffect(() => {
     void load();
+    const timer = window.setInterval(() => void load(false), 10_000);
+    return () => window.clearInterval(timer);
   }, []);
 
-  async function action(item: EditorialQueueItem, operation: "regenerate" | "reject" | "publish") {
+  async function action(
+    item: EditorialQueueItem,
+    operation: "regenerate" | "reject" | "publish",
+  ) {
     setBusyId(item.id);
     setError("");
     try {
-      await editorialRequest(`/api/editorial/${item.id}/${operation}`, { method: "POST" });
+      await editorialRequest(`/api/editorial/${item.id}/${operation}`, {
+        method: "POST",
+      });
       setSelected(null);
       await load();
     } catch (caught: any) {
@@ -644,8 +654,10 @@ function EditorialInbox() {
     }
   }
 
-  const visible = filter === "all" ? items : items.filter((item) => item.status === filter);
-  const count = (status: string) => items.filter((item) => item.status === status).length;
+  const visible =
+    filter === "all" ? items : items.filter((item) => item.status === filter);
+  const count = (status: string) =>
+    items.filter((item) => item.status === status).length;
   return (
     <>
       <PageHead
@@ -659,62 +671,135 @@ function EditorialInbox() {
         }
       />
       <div className="editorialMetrics">
-        <button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>
-          <strong>{items.length}</strong><span>All</span>
+        <button
+          className={filter === "all" ? "active" : ""}
+          onClick={() => setFilter("all")}
+        >
+          <strong>{items.length}</strong>
+          <span>All</span>
         </button>
-        <button className={filter === "processing" ? "active" : ""} onClick={() => setFilter("processing")}>
-          <strong>{count("processing")}</strong><span>Generating</span>
+        <button
+          className={filter === "processing" ? "active" : ""}
+          onClick={() => setFilter("processing")}
+        >
+          <strong>{count("processing")}</strong>
+          <span>Generating</span>
         </button>
-        <button className={filter === "ready_for_review" ? "active" : ""} onClick={() => setFilter("ready_for_review")}>
-          <strong>{count("ready_for_review")}</strong><span>Ready</span>
+        <button
+          className={filter === "ready_for_review" ? "active" : ""}
+          onClick={() => setFilter("ready_for_review")}
+        >
+          <strong>{count("ready_for_review")}</strong>
+          <span>Ready</span>
         </button>
-        <button className={filter === "failed" ? "active" : ""} onClick={() => setFilter("failed")}>
-          <strong>{count("failed")}</strong><span>Needs attention</span>
+        <button
+          className={filter === "failed" ? "active" : ""}
+          onClick={() => setFilter("failed")}
+        >
+          <strong>{count("failed")}</strong>
+          <span>Needs attention</span>
         </button>
       </div>
-      {error && <div className="notice editorialError"><CircleAlert /> {error}</div>}
+      {error && (
+        <div className="notice editorialError">
+          <CircleAlert /> {error}
+        </div>
+      )}
       <section className="editorialQueue">
         <div className="queueHeader">
-          <span>Story</span><span>Source</span><span>Status</span><span>Received</span><span>Actions</span>
+          <span>Story</span>
+          <span>Source</span>
+          <span>Status</span>
+          <span>Received</span>
+          <span>Actions</span>
         </div>
         {loading ? (
           <p className="loading">Loading the editorial queue…</p>
         ) : visible.length === 0 ? (
-          <Empty icon={Inbox} title="Inbox clear" text="Newly discovered stories will appear here automatically." />
-        ) : visible.map((item) => (
-          <article className="queueRow" key={item.id}>
-            <div className="queueStory">
-              <small>{item.source.domain}</small>
-              <b>{item.source.title}</b>
-              {item.duplicate && (
-                <em><CircleAlert /> {item.duplicate.kind === "exact" ? "Exact source already received" : `Likely duplicate · ${Math.round(item.duplicate.score * 100)}% match`}</em>
-              )}
-              {item.failureReason && <em className="failedReason">{item.failureReason}</em>}
-            </div>
-            <div className="queueSource">
-              <b>{item.source.sourceName}</b>
-              <a href={item.source.sourceUrl} target="_blank" rel="noreferrer">Open source ↗</a>
-            </div>
-            <span className={`queueStatus ${item.status}`}>{editorialStatusLabel[item.status] || item.status}</span>
-            <span className="queueDate">{item.receivedAt ? new Date(String(item.receivedAt)).toLocaleString() : "Just now"}</span>
-            <div className="queueActions">
-              <button onClick={() => setSelected(item)} disabled={!item.generatedArticle}><Eye /> Preview</button>
-              <button onClick={() => void action(item, "regenerate")} disabled={busyId === item.id || item.status === "published"}><RefreshCw /> Regenerate</button>
-              {item.status === "ready_for_review" && (
-                <button className="primary" onClick={() => void action(item, "publish")} disabled={busyId === item.id}><Send /> Approve & Publish</button>
-              )}
-              {!['published', 'rejected'].includes(item.status) && (
-                <button onClick={() => void action(item, "reject")} disabled={busyId === item.id}><Ban /> Reject</button>
-              )}
-            </div>
-          </article>
-        ))}
+          <Empty
+            icon={Inbox}
+            title="Inbox clear"
+            text="Newly discovered stories will appear here automatically."
+          />
+        ) : (
+          visible.map((item) => (
+            <article className="queueRow" key={item.id}>
+              <div className="queueStory">
+                <small>{item.source.domain}</small>
+                <b>{item.source.title}</b>
+                {item.duplicate && (
+                  <em>
+                    <CircleAlert />{" "}
+                    {item.duplicate.kind === "exact"
+                      ? "Exact source already received"
+                      : `Likely duplicate · ${Math.round(item.duplicate.score * 100)}% match`}
+                  </em>
+                )}
+                {item.failureReason && (
+                  <em className="failedReason">{item.failureReason}</em>
+                )}
+              </div>
+              <div className="queueSource">
+                <b>{item.source.sourceName}</b>
+                <a
+                  href={item.source.sourceUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open source ↗
+                </a>
+              </div>
+              <span className={`queueStatus ${item.status}`}>
+                {editorialStatusLabel[item.status] || item.status}
+              </span>
+              <span className="queueDate">
+                {item.receivedAt
+                  ? new Date(String(item.receivedAt)).toLocaleString()
+                  : "Just now"}
+              </span>
+              <div className="queueActions">
+                <button
+                  onClick={() => setSelected(item)}
+                  disabled={!item.generatedArticle}
+                >
+                  <Eye /> Preview
+                </button>
+                <button
+                  onClick={() => void action(item, "regenerate")}
+                  disabled={busyId === item.id || item.status === "published"}
+                >
+                  <RefreshCw /> Regenerate
+                </button>
+                {item.status === "ready_for_review" && (
+                  <button
+                    className="primary"
+                    onClick={() => void action(item, "publish")}
+                    disabled={busyId === item.id}
+                  >
+                    <Send /> Approve & Publish
+                  </button>
+                )}
+                {!["published", "rejected"].includes(item.status) && (
+                  <button
+                    onClick={() => void action(item, "reject")}
+                    disabled={busyId === item.id}
+                  >
+                    <Ban /> Reject
+                  </button>
+                )}
+              </div>
+            </article>
+          ))
+        )}
       </section>
       {selected && (
         <EditorialReview
           item={selected}
           close={() => setSelected(null)}
-          saved={async () => { setSelected(null); await load(); }}
+          saved={async () => {
+            setSelected(null);
+            await load();
+          }}
           publish={() => action(selected, "publish")}
           busy={busyId === selected.id}
         />
@@ -737,7 +822,9 @@ function EditorialReview({
   busy: boolean;
 }) {
   const [mode, setMode] = useState<"preview" | "edit">("preview"),
-    [draft, setDraft] = useState<Article>(() => structuredClone(item.generatedArticle!)),
+    [draft, setDraft] = useState<Article>(() =>
+      structuredClone(item.generatedArticle!),
+    ),
     [saving, setSaving] = useState(false),
     [message, setMessage] = useState("");
   const issues = validateArticle(draft);
@@ -762,14 +849,32 @@ function EditorialReview({
   }
   return (
     <div className="overlay editorialOverlay" onMouseDown={close}>
-      <section className="editorialReview" onMouseDown={(event) => event.stopPropagation()}>
+      <section
+        className="editorialReview"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
         <header>
-          <div><p className="eyebrow">PRODUCTION PREVIEW</p><h2>{draft.quick_brief.headline}</h2></div>
-          <button className="close" onClick={close}><X /></button>
+          <div>
+            <p className="eyebrow">PRODUCTION PREVIEW</p>
+            <h2>{draft.quick_brief.headline}</h2>
+          </div>
+          <button className="close" onClick={close}>
+            <X />
+          </button>
         </header>
         <div className="reviewTabs">
-          <button className={mode === "preview" ? "active" : ""} onClick={() => setMode("preview")}><Eye /> Preview</button>
-          <button className={mode === "edit" ? "active" : ""} onClick={() => setMode("edit")}><FileText /> Edit production data</button>
+          <button
+            className={mode === "preview" ? "active" : ""}
+            onClick={() => setMode("preview")}
+          >
+            <Eye /> Preview
+          </button>
+          <button
+            className={mode === "edit" ? "active" : ""}
+            onClick={() => setMode("edit")}
+          >
+            <FileText /> Edit production data
+          </button>
         </div>
         {message && <div className="notice">{message}</div>}
         {mode === "preview" ? (
@@ -778,29 +883,89 @@ function EditorialReview({
               <span>{draft.quick_brief.category} · QUICK BRIEF</span>
               <h2>{draft.quick_brief.headline}</h2>
               <p>{draft.quick_brief.quick_summary}</p>
-              <ol>{draft.quick_brief.three_things_to_know.map((fact) => <li key={fact}>{fact}</li>)}</ol>
-              {draft.quick_brief.key_number && <strong>{draft.quick_brief.key_number.value}<small>{draft.quick_brief.key_number.label}</small></strong>}
+              <ol>
+                {draft.quick_brief.three_things_to_know.map((fact) => (
+                  <li key={fact}>{fact}</li>
+                ))}
+              </ol>
+              {draft.quick_brief.key_number && (
+                <strong>
+                  {draft.quick_brief.key_number.value}
+                  <small>{draft.quick_brief.key_number.label}</small>
+                </strong>
+              )}
             </section>
             <section className="fullPreview">
-              <span>FULL STORY</span><h2>{draft.full_article.headline}</h2><h3>{draft.full_article.hook}</h3>
-              <article><b>What happened</b><p>{draft.full_article.what_happened}</p></article>
-              <article><b>Why this matters</b><p>{draft.full_article.why_this_matters}</p></article>
-              {draft.full_article.explore_sections.map((section) => <article key={section.title}><b>{section.title}</b><p>{section.content}</p></article>)}
-              <article><b>Bigger picture</b><p>{draft.full_article.bigger_picture}</p></article>
+              <span>FULL STORY</span>
+              <h2>{draft.full_article.headline}</h2>
+              <h3>{draft.full_article.hook}</h3>
+              <article>
+                <b>What happened</b>
+                <p>{draft.full_article.what_happened}</p>
+              </article>
+              <article>
+                <b>Why this matters</b>
+                <p>{draft.full_article.why_this_matters}</p>
+              </article>
+              {draft.full_article.explore_sections.map((section) => (
+                <article key={section.title}>
+                  <b>{section.title}</b>
+                  <p>{section.content}</p>
+                </article>
+              ))}
+              <article>
+                <b>Bigger picture</b>
+                <p>{draft.full_article.bigger_picture}</p>
+              </article>
             </section>
           </div>
         ) : (
           <div className="reviewEditor">
-            <section className="panel form"><h2>Swipe Deck / Quick Brief</h2><BriefForm article={draft} set={setDraft} /></section>
-            <section className="panel form"><h2>Full Story</h2><FullForm article={draft} set={setDraft} /></section>
-            <aside className="panel validation"><h2>Validation</h2>{issues.length ? issues.map((issue, index) => <div className={issue.level} key={index}><CircleAlert /><span><b>{issue.path}</b>{issue.message}</span></div>) : <div className="allgood"><Check /> Ready to publish</div>}</aside>
+            <section className="panel form">
+              <h2>Swipe Deck / Quick Brief</h2>
+              <BriefForm article={draft} set={setDraft} />
+            </section>
+            <section className="panel form">
+              <h2>Full Story</h2>
+              <FullForm article={draft} set={setDraft} />
+            </section>
+            <aside className="panel validation">
+              <h2>Validation</h2>
+              {issues.length ? (
+                issues.map((issue, index) => (
+                  <div className={issue.level} key={index}>
+                    <CircleAlert />
+                    <span>
+                      <b>{issue.path}</b>
+                      {issue.message}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div className="allgood">
+                  <Check /> Ready to publish
+                </div>
+              )}
+            </aside>
           </div>
         )}
         <footer>
-          <a href={item.source.sourceUrl} target="_blank" rel="noreferrer">Verify original source ↗</a>
+          <a href={item.source.sourceUrl} target="_blank" rel="noreferrer">
+            Verify original source ↗
+          </a>
           <div>
-            {mode === "edit" && <button onClick={() => void saveEdits()} disabled={saving}>{saving ? "Saving…" : "Save edits"}</button>}
-            <button className="primary" onClick={() => void publish()} disabled={busy || issues.some((issue) => issue.level === "error")}><Send /> Approve & Publish</button>
+            {mode === "edit" && (
+              <button onClick={() => void saveEdits()} disabled={saving}>
+                {saving ? "Saving…" : "Save edits"}
+              </button>
+            )}
+            <button
+              className="primary"
+              onClick={() => void publish()}
+              disabled={busy || issues.some((issue) => issue.level === "error")}
+            >
+              <Send /> Approve & Publish
+            </button>
           </div>
         </footer>
       </section>
@@ -1024,11 +1189,20 @@ function ArticleEditor() {
       setArticle((current) => ({
         ...current,
         imageUrl,
-        mediaUrls: [imageUrl, ...(current.mediaUrls || []).filter((url) => url !== current.imageUrl && url !== imageUrl)],
+        mediaUrls: [
+          imageUrl,
+          ...(current.mediaUrls || []).filter(
+            (url) => url !== current.imageUrl && url !== imageUrl,
+          ),
+        ],
       }));
-      setMessage("Cover photo uploaded. Save or publish the article to keep it.");
+      setMessage(
+        "Cover photo uploaded. Save or publish the article to keep it.",
+      );
     } catch (error: any) {
-      setMessage(`Cover upload failed: ${error.code || error.message || "unknown error"}`);
+      setMessage(
+        `Cover upload failed: ${error.code || error.message || "unknown error"}`,
+      );
     } finally {
       setCoverBusy(false);
     }
@@ -1038,7 +1212,12 @@ function ArticleEditor() {
       ...current,
       imageUrl,
       mediaUrls: imageUrl
-        ? [imageUrl, ...(current.mediaUrls || []).filter((url) => url !== current.imageUrl && url !== imageUrl)]
+        ? [
+            imageUrl,
+            ...(current.mediaUrls || []).filter(
+              (url) => url !== current.imageUrl && url !== imageUrl,
+            ),
+          ]
         : (current.mediaUrls || []).filter((url) => url !== current.imageUrl),
     }));
   }
@@ -1166,13 +1345,21 @@ function ArticleEditor() {
           {article.imageUrl ? (
             <img src={article.imageUrl} alt="Article cover preview" />
           ) : (
-            <span><Image /><small>No cover photo</small></span>
+            <span>
+              <Image />
+              <small>No cover photo</small>
+            </span>
           )}
         </div>
         <div className="coverControls">
           <p className="eyebrow">ARTICLE COVER</p>
-          <h2>{article.imageUrl ? "Cover photo ready" : "Add a cover photo"}</h2>
-          <p className="muted">JPG, PNG or WebP up to 10 MB. This image is used by the mobile feed and article page.</p>
+          <h2>
+            {article.imageUrl ? "Cover photo ready" : "Add a cover photo"}
+          </h2>
+          <p className="muted">
+            JPG, PNG or WebP up to 10 MB. This image is used by the mobile feed
+            and article page.
+          </p>
           <label className="coverUrlField">
             Or paste an image URL
             <input
@@ -1186,7 +1373,11 @@ function ArticleEditor() {
           <div className="actions">
             <label className="buttonLike">
               <Image />
-              {coverBusy ? "Uploading…" : article.imageUrl ? "Replace photo" : "Choose photo"}
+              {coverBusy
+                ? "Uploading…"
+                : article.imageUrl
+                  ? "Replace photo"
+                  : "Choose photo"}
               <input
                 type="file"
                 accept="image/jpeg,image/png,image/webp"
@@ -1198,10 +1389,7 @@ function ArticleEditor() {
               />
             </label>
             {article.imageUrl && (
-              <button
-                type="button"
-                onClick={() => setCoverUrl("")}
-              >
+              <button type="button" onClick={() => setCoverUrl("")}>
                 Remove
               </button>
             )}
@@ -1552,13 +1740,7 @@ function ReelModal({ close }: { close: () => void }) {
   );
 }
 
-function CreateStreamModal({
-  user,
-  close,
-}: {
-  user: User;
-  close: () => void;
-}) {
+function CreateStreamModal({ user, close }: { user: User; close: () => void }) {
   const navg = useNavigate(),
     [title, setTitle] = useState(""),
     [description, setDescription] = useState(""),
@@ -1578,7 +1760,7 @@ function CreateStreamModal({
         roomName =
           customRoomName.trim().replace(/[^A-Za-z0-9_-]/g, "") ||
           `cie_${d.id.replace(/[^A-Za-z0-9]/g, "")}`;
-      
+
       const livekitUrl = "wss://cie-daily-79ts1icb.livekit.cloud";
       // Creation only reserves the room. Start live publishes the tracks first.
       const isLiveNow = false;
@@ -1644,7 +1826,10 @@ function CreateStreamModal({
           console.warn("spaces mirror write notice:", mirrorErr);
         }
       } catch (clientErr: any) {
-        console.warn("Client SDK stream write notice, trying server-side endpoint...", clientErr);
+        console.warn(
+          "Client SDK stream write notice, trying server-side endpoint...",
+          clientErr,
+        );
         const idt = await user.getIdToken();
         const resp = await fetch("/api/streams", {
           method: "POST",
@@ -1663,7 +1848,12 @@ function CreateStreamModal({
         });
         const resJson = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-          throw new Error(resJson.detail || resJson.error || clientErr?.message || "Permission denied creating stream record.");
+          throw new Error(
+            resJson.detail ||
+              resJson.error ||
+              clientErr?.message ||
+              "Permission denied creating stream record.",
+          );
         }
       }
 
@@ -1721,12 +1911,16 @@ function CreateStreamModal({
             placeholder="Leave blank for auto-generated cie_ room ID"
           />
         </label>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div
+          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}
+        >
           <label>
             Initial Status
             <select
               value={status}
-              onChange={(e) => setStatus(e.target.value as "scheduled" | "live")}
+              onChange={(e) =>
+                setStatus(e.target.value as "scheduled" | "live")
+              }
             >
               <option value="scheduled">Scheduled</option>
               <option value="live">Prepare to go live</option>
@@ -1777,8 +1971,14 @@ function LiveHome({ user }: { user: User }) {
     ]);
 
   async function removeCompleted(stream: LiveStream) {
-    if (!["ended", "cancelled"].includes(String(stream.status).toLowerCase())) return;
-    if (!confirm(`Delete “${stream.title}” and its viewer messages? This cannot be undone.`)) return;
+    if (!["ended", "cancelled"].includes(String(stream.status).toLowerCase()))
+      return;
+    if (
+      !confirm(
+        `Delete “${stream.title}” and its viewer messages? This cannot be undone.`,
+      )
+    )
+      return;
     await deleteStreamAndMessages(stream.id);
   }
   return (
@@ -1788,7 +1988,10 @@ function LiveHome({ user }: { user: User }) {
         title="Live Studio"
         desc="Canonical room names, verified tokens and stage-specific diagnostics."
         action={
-          <button className="primary livebtn" onClick={() => setModalOpen(true)}>
+          <button
+            className="primary livebtn"
+            onClick={() => setModalOpen(true)}
+          >
             <Radio />
             Create stream
           </button>
@@ -1823,7 +2026,9 @@ function LiveHome({ user }: { user: User }) {
             <span>{fmt(s.createdAt)}</span>
             <span className="streamActions">
               <span>Open →</span>
-              {["ended", "cancelled"].includes(String(s.status).toLowerCase()) && (
+              {["ended", "cancelled"].includes(
+                String(s.status).toLowerCase(),
+              ) && (
                 <span
                   className="deleteStream"
                   role="button"
@@ -1869,7 +2074,10 @@ async function deleteStreamAndMessages(streamId: string) {
     }
     await deleteDoc(doc(db, "liveStreams", streamId));
   } catch (err) {
-    console.warn("Client delete failed, attempting server delete fallback:", err);
+    console.warn(
+      "Client delete failed, attempting server delete fallback:",
+      err,
+    );
     if (auth.currentUser) {
       const idt = await auth.currentUser.getIdToken();
       await fetch(`/api/streams/${encodeURIComponent(streamId)}`, {
@@ -1892,7 +2100,9 @@ function Broadcast({ user }: { user: User }) {
     [serverUrl, setServerUrl] = useState(""),
     [error, setError] = useState(""),
     [availableCameras, setAvailableCameras] = useState<MediaDeviceInfo[]>([]);
-  const [selectedCamera, setSelectedCamera] = useState<MediaDeviceInfo | null>(null),
+  const [selectedCamera, setSelectedCamera] = useState<MediaDeviceInfo | null>(
+      null,
+    ),
     [previewStream, setPreviewStream] = useState<MediaStream | null>(null),
     [liveMessages, setLiveMessages] = useState<any[]>([]);
   const previewRef = useRef<HTMLVideoElement>(null);
@@ -1900,7 +2110,12 @@ function Broadcast({ user }: { user: User }) {
   const broadcastRoom = useRef<Room | null>(null);
   const startingRef = useRef(false);
   const [starting, setStarting] = useState(false);
-  useEffect(() => () => { void broadcastRoom.current?.disconnect(); }, []);
+  useEffect(
+    () => () => {
+      void broadcastRoom.current?.disconnect();
+    },
+    [],
+  );
   useEffect(
     () =>
       id
@@ -1924,7 +2139,10 @@ function Broadcast({ user }: { user: User }) {
         orderBy("createdAt", "desc"),
         limit(50),
       ),
-      (snapshot) => setLiveMessages(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))),
+      (snapshot) =>
+        setLiveMessages(
+          snapshot.docs.map((item) => ({ id: item.id, ...item.data() })),
+        ),
       () => setLiveMessages([]),
     );
   }, [id]);
@@ -1932,12 +2150,20 @@ function Broadcast({ user }: { user: User }) {
   function cameraScore(device: MediaDeviceInfo) {
     const label = device.label.toLowerCase();
     let score = 0;
-    if (/(integrated|built.?in|internal|facetime|front|laptop|hd webcam|camera|webcam|video)/.test(label)) score += 100;
-    if (/(phone|link to windows|droidcam|iriun|epoccam)/.test(label)) score -= 20;
+    if (
+      /(integrated|built.?in|internal|facetime|front|laptop|hd webcam|camera|webcam|video)/.test(
+        label,
+      )
+    )
+      score += 100;
+    if (/(phone|link to windows|droidcam|iriun|epoccam)/.test(label))
+      score -= 20;
     return score;
   }
 
-  async function preflight(preferredDeviceId?: string): Promise<MediaDeviceInfo | null> {
+  async function preflight(
+    preferredDeviceId?: string,
+  ): Promise<MediaDeviceInfo | null> {
     const c: any = {
       auth: user ? "pass" : "fail",
       network: navigator.onLine ? "pass" : "fail",
@@ -1958,17 +2184,24 @@ function Broadcast({ user }: { user: User }) {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const cameras = devices.filter((device) => device.kind === "videoinput");
       if (cameras.length === 0) {
-        throw new Error("No video camera found. Please connect a webcam or enable camera permissions.");
+        throw new Error(
+          "No video camera found. Please connect a webcam or enable camera permissions.",
+        );
       }
       setAvailableCameras(cameras);
       cameras.sort((a, b) => cameraScore(b) - cameraScore(a));
-      
+
       const targetDeviceId = preferredDeviceId || selectedCamera?.deviceId;
-      chosenCamera = cameras.find((d) => d.deviceId === targetDeviceId) || cameras[0];
+      chosenCamera =
+        cameras.find((d) => d.deviceId === targetDeviceId) || cameras[0];
 
       const exactStream = await navigator.mediaDevices.getUserMedia({
         video: chosenCamera.deviceId
-          ? { deviceId: { exact: chosenCamera.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+          ? {
+              deviceId: { exact: chosenCamera.deviceId },
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+            }
           : true,
       });
       previewMedia.current?.getTracks().forEach((track) => track.stop());
@@ -1980,7 +2213,9 @@ function Broadcast({ user }: { user: User }) {
       setSelectedCamera(chosenCamera);
       c.camera = "pass";
       try {
-        const microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const microphone = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+        });
         microphone.getTracks().forEach((track) => track.stop());
         c.microphone = "pass";
       } catch {
@@ -1989,7 +2224,9 @@ function Broadcast({ user }: { user: User }) {
     } catch (cameraError) {
       c.camera = "fail";
       c.microphone = "fail";
-      setError(`Camera preflight: ${cameraError instanceof Error ? cameraError.message : "permission or device error"}`);
+      setError(
+        `Camera preflight: ${cameraError instanceof Error ? cameraError.message : "permission or device error"}`,
+      );
     }
     try {
       const h = await fetch("/api/health").then(readApiJson);
@@ -2009,11 +2246,12 @@ function Broadcast({ user }: { user: User }) {
     setError("");
     let room: Room | null = null;
     try {
-    let camera = selectedCamera;
-    if (!camera) {
-      camera = await preflight();
-    }
-      if (!camera) throw new Error("Choose an available camera before going live.");
+      let camera = selectedCamera;
+      if (!camera) {
+        camera = await preflight();
+      }
+      if (!camera)
+        throw new Error("Choose an available camera before going live.");
       const liveUpdate = {
         status: "live",
         isLive: true,
@@ -2039,20 +2277,31 @@ function Broadcast({ user }: { user: User }) {
       const j = await readApiJson(r);
       if (!r.ok) {
         if (j.error === "livekit_not_configured") {
-          throw new Error("LiveKit credentials (LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL) are not set in the server .env configuration.");
+          throw new Error(
+            "LiveKit credentials (LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL) are not set in the server .env configuration.",
+          );
         }
         throw new Error(j.detail || j.error || "Token request failed");
       }
       previewMedia.current?.getTracks().forEach((track) => track.stop());
       previewMedia.current = null;
       setPreviewStream(null);
-      if (!j.token || !j.serverUrl || j.roomName !== stream.roomName || j.role !== "presenter") {
-        throw new Error("The server did not authorize this room for broadcasting.");
+      if (
+        !j.token ||
+        !j.serverUrl ||
+        j.roomName !== stream.roomName ||
+        j.role !== "presenter"
+      ) {
+        throw new Error(
+          "The server did not authorize this room for broadcasting.",
+        );
       }
       room = new Room();
       broadcastRoom.current = room;
       await room.connect(j.serverUrl, j.token);
-      await room.localParticipant.setCameraEnabled(true, { deviceId: camera.deviceId });
+      await room.localParticipant.setCameraEnabled(true, {
+        deviceId: camera.deviceId,
+      });
       await room.localParticipant.setMicrophoneEnabled(true);
       // A local camera preview is not a broadcast. Announce live only after
       // both tracks have successfully published to the requested room.
@@ -2062,17 +2311,21 @@ function Broadcast({ user }: { user: User }) {
         try {
           const existing = await getDoc(reference);
           if (existing.exists()) await updateDoc(reference, liveUpdate);
-        } catch { /* Legacy mirrors must not prevent the canonical broadcast. */ }
+        } catch {
+          /* Legacy mirrors must not prevent the canonical broadcast. */
+        }
       }
-      setChecks((previous) => ({ ...previous, backend: "pass", livekit: "pass" }));
+      setChecks((previous) => ({
+        ...previous,
+        backend: "pass",
+        livekit: "pass",
+      }));
       setToken(j.token);
       setServerUrl(j.serverUrl);
     } catch (e: any) {
       await room?.disconnect();
       broadcastRoom.current = null;
-      setError(
-        `Startup failed: ${e.message}`,
-      );
+      setError(`Startup failed: ${e.message}`);
     } finally {
       startingRef.current = false;
       setStarting(false);
@@ -2110,8 +2363,18 @@ function Broadcast({ user }: { user: User }) {
     setToken("");
   }
   async function deleteCompleted() {
-    if (!id || !stream || !["ended", "cancelled"].includes(String(stream.status).toLowerCase())) return;
-    if (!confirm(`Delete “${stream.title}” and its viewer messages? This cannot be undone.`)) return;
+    if (
+      !id ||
+      !stream ||
+      !["ended", "cancelled"].includes(String(stream.status).toLowerCase())
+    )
+      return;
+    if (
+      !confirm(
+        `Delete “${stream.title}” and its viewer messages? This cannot be undone.`,
+      )
+    )
+      return;
     await deleteStreamAndMessages(id);
     try {
       await deleteDoc(doc(db, "live_spaces", id));
@@ -2154,8 +2417,14 @@ function Broadcast({ user }: { user: User }) {
               video={false}
               onDisconnected={() => {
                 setToken("");
-                setError("Broadcast disconnected. Start a new stream to reconnect.");
-                void end().catch(() => setError("Broadcast disconnected. Please end the stream record manually."));
+                setError(
+                  "Broadcast disconnected. Start a new stream to reconnect.",
+                );
+                void end().catch(() =>
+                  setError(
+                    "Broadcast disconnected. Please end the stream record manually.",
+                  ),
+                );
               }}
               onError={(e) =>
                 setError(`LiveKit connection failed: ${e.message}`)
@@ -2197,12 +2466,25 @@ function Broadcast({ user }: { user: User }) {
                     ))}
                   </select>
                 ) : selectedCamera ? (
-                  <span>CAM · {selectedCamera.label || "Connected Camera"}</span>
+                  <span>
+                    CAM · {selectedCamera.label || "Connected Camera"}
+                  </span>
                 ) : null}
                 <div className="broadcastActions">
-                  <button type="button" disabled={starting} onClick={() => void preflight()}>Run preflight</button>
+                  <button
+                    type="button"
+                    disabled={starting}
+                    onClick={() => void preflight()}
+                  >
+                    Run preflight
+                  </button>
                   {stream.status !== "ended" && (
-                    <button type="button" className="primary" disabled={starting} onClick={start}>
+                    <button
+                      type="button"
+                      className="primary"
+                      disabled={starting}
+                      onClick={start}
+                    >
                       <Radio />
                       {starting ? "Connecting…" : "Start live"}
                     </button>
@@ -2247,8 +2529,13 @@ function Broadcast({ user }: { user: User }) {
               End stream
             </button>
           )}
-          {["ended", "cancelled"].includes(String(stream.status).toLowerCase()) && (
-            <button className="danger deleteCompleted" onClick={() => void deleteCompleted()}>
+          {["ended", "cancelled"].includes(
+            String(stream.status).toLowerCase(),
+          ) && (
+            <button
+              className="danger deleteCompleted"
+              onClick={() => void deleteCompleted()}
+            >
               Delete completed stream
             </button>
           )}
@@ -2257,12 +2544,18 @@ function Broadcast({ user }: { user: User }) {
               <h3>Viewer comments</h3>
               <span>{liveMessages.length}</span>
             </div>
-            {liveMessages.length ? liveMessages.map((message) => (
-              <div className="liveComment" key={message.id}>
-                <b>{message.authorName || "User"}</b>
-                <p>{message.text || message.content || ""}</p>
-              </div>
-            )) : <p className="muted">Messages from the mobile Live Chat appear here in real time.</p>}
+            {liveMessages.length ? (
+              liveMessages.map((message) => (
+                <div className="liveComment" key={message.id}>
+                  <b>{message.authorName || "User"}</b>
+                  <p>{message.text || message.content || ""}</p>
+                </div>
+              ))
+            ) : (
+              <p className="muted">
+                Messages from the mobile Live Chat appear here in real time.
+              </p>
+            )}
           </section>
         </aside>
       </div>

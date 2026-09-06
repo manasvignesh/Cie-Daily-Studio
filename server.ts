@@ -3,13 +3,9 @@ import express, { type Request, type Response } from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { timingSafeEqual } from "node:crypto";
-import {
-  initializeApp,
-  cert,
-  getApps,
-} from "firebase-admin/app";
+import { initializeApp, cert, getApps } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
-import { getFirestore, FieldValue } from "firebase-admin/firestore";
+import { getFirestore, FieldValue, Timestamp } from "firebase-admin/firestore";
 import { AccessToken } from "livekit-server-sdk";
 import OpenAI from "openai";
 import {
@@ -17,6 +13,7 @@ import {
   EditorialService,
   classifyEditorialFailure,
   firestoreSafeIngestStory,
+  editorialProcessingStaleAfterMs,
   safeEditorialFailureMessage,
   sourceText,
   type EditorialQueueItem,
@@ -41,9 +38,7 @@ function ensureFirebaseAdmin() {
   try {
     const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
     initializeApp(
-      raw
-        ? { credential: cert(JSON.parse(raw)), projectId }
-        : { projectId },
+      raw ? { credential: cert(JSON.parse(raw)), projectId } : { projectId },
     );
     firebaseAdminInitializationError = undefined;
   } catch (error) {
@@ -52,7 +47,11 @@ function ensureFirebaseAdmin() {
     throw error;
   }
 }
-try { ensureFirebaseAdmin(); } catch { /* Keep the API alive to return JSON diagnostics. */ }
+try {
+  ensureFirebaseAdmin();
+} catch {
+  /* Keep the API alive to return JSON diagnostics. */
+}
 const app = express();
 app.use(express.json({ limit: "4mb" }));
 
@@ -194,7 +193,8 @@ app.get("/api/health", async (_req, res) => {
         : geminiApiKeys().length
           ? "gemini"
           : "not_configured",
-      fallbackConfigured: nvidiaApiKeys().length > 1 || geminiApiKeys().length > 0,
+      fallbackConfigured:
+        nvidiaApiKeys().length > 1 || geminiApiKeys().length > 0,
     },
     livekit: {
       configured: !!(
@@ -209,19 +209,28 @@ app.get("/api/health", async (_req, res) => {
 const prompt = `You are the editorial engine for CIE Daily. Structure only the supplied reporting; do not add outside knowledge. Never invent or alter numbers, dates, names, locations, quotes, company names, capacities, targets, or statistics. If a detail is absent, omit it. Return strict JSON with exactly two independent representations: quick_brief and full_article. Every named field is required; use an empty array or null only where the schema explicitly permits it. quick_brief has category, headline, quick_summary (35-60 words), three_things_to_know (exactly 3 concise facts), key_number ({value,label} or null). full_article has headline, hook, in_20_seconds, what_happened (60+ words), why_this_matters (50+ words), bigger_picture, key_stats (array of {value,label}), explore_sections (3-6 story-specific sections, each with title, summary, content, items [{title,description}]), takeaways (3-5 substantive strings, never omit this field), quote ({text,speaker,role} or null). The combined full_article reading content must be at least 200 words. Do not copy the brief into the full article. Output JSON only.`;
 
 function nvidiaApiKeys() {
-  return [...new Set([
-    process.env.NVIDIA_API_KEY,
-    process.env.NVIDIA_API_KEY_2,
-    process.env.NVIDIA_API_KEY_3,
-    ...(process.env.NVIDIA_API_KEYS || "").split(/[\n,]/),
-  ].map((value) => String(value || "").trim()).filter(Boolean))];
+  return [
+    ...new Set(
+      [
+        process.env.NVIDIA_API_KEY,
+        process.env.NVIDIA_API_KEY_2,
+        process.env.NVIDIA_API_KEY_3,
+        ...(process.env.NVIDIA_API_KEYS || "").split(/[\n,]/),
+      ]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean),
+    ),
+  ];
 }
 
 function geminiApiKeys() {
-  return [...new Set([
-    process.env.GEMINI_API_KEY,
-    process.env.GEMINI_API_KEY_2,
-  ].map((value) => String(value || "").trim()).filter(Boolean))];
+  return [
+    ...new Set(
+      [process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEY_2]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean),
+    ),
+  ];
 }
 
 function canTryAnotherNvidiaKey(error: unknown) {
@@ -229,10 +238,19 @@ function canTryAnotherNvidiaKey(error: unknown) {
   const status = Number(value?.status || 0);
   const code = String(value?.code || "").toLowerCase();
   const message = error instanceof Error ? error.message : "";
-  return status === 400 || status === 401 || status === 403 || status === 404 ||
-    status === 408 || status === 429 || status >= 500 ||
+  return (
+    status === 400 ||
+    status === 401 ||
+    status === 403 ||
+    status === 404 ||
+    status === 408 ||
+    status === 429 ||
+    status >= 500 ||
     /timeout|connection|rate_limit/.test(code) ||
-    /empty_ai_response|invalid_generated_json|generated_schema_missing/.test(message);
+    /empty_ai_response|invalid_generated_json|generated_schema_missing/.test(
+      message,
+    )
+  );
 }
 
 function parseGeneratedArticle(raw: string) {
@@ -260,7 +278,9 @@ function normalizeGeneratedArticle(
     ? fullArticle.takeaways.filter((value) => String(value || "").trim())
     : [];
   const fallbackTakeaways = Array.isArray(quickBrief.three_things_to_know)
-    ? quickBrief.three_things_to_know.filter((value) => String(value || "").trim()).slice(0, 3)
+    ? quickBrief.three_things_to_know
+        .filter((value) => String(value || "").trim())
+        .slice(0, 3)
     : [];
   return {
     quick_brief: {
@@ -272,11 +292,14 @@ function normalizeGeneratedArticle(
     },
     full_article: {
       ...fullArticle,
-      key_stats: Array.isArray(fullArticle.key_stats) ? fullArticle.key_stats : [],
+      key_stats: Array.isArray(fullArticle.key_stats)
+        ? fullArticle.key_stats
+        : [],
       explore_sections: Array.isArray(fullArticle.explore_sections)
         ? fullArticle.explore_sections
         : [],
-      takeaways: suppliedTakeaways.length >= 3 ? suppliedTakeaways : fallbackTakeaways,
+      takeaways:
+        suppliedTakeaways.length >= 3 ? suppliedTakeaways : fallbackTakeaways,
       quote: fullArticle.quote ?? null,
     },
   };
@@ -305,9 +328,10 @@ async function generateArticle(
   const retryNote = validationFeedback.length
     ? `\nThe previous output failed these checks. Correct them without adding facts:\n- ${validationFeedback.join("\n- ")}`
     : "";
-  const timeout = providers.length === 1
-    ? 45_000
-    : Math.max(8_000, Math.floor(50_000 / providers.length));
+  const timeout =
+    providers.length === 1
+      ? 45_000
+      : Math.max(8_000, Math.floor(50_000 / providers.length));
   let lastError: unknown;
   for (let index = 0; index < providers.length; index += 1) {
     const provider = providers[index];
@@ -336,7 +360,8 @@ async function generateArticle(
       return normalizeGeneratedArticle(parseGeneratedArticle(text));
     } catch (error) {
       lastError = error;
-      if (index === providers.length - 1 || !canTryAnotherNvidiaKey(error)) throw error;
+      if (index === providers.length - 1 || !canTryAnotherNvidiaKey(error))
+        throw error;
       const value = error as { status?: number; code?: string };
       console.warn("[article-generation] retrying with fallback provider", {
         provider: provider.name,
@@ -351,7 +376,9 @@ async function generateArticle(
 
 async function generatePublishableArticle(source: string, category: string) {
   const article = await generateArticle(source, category);
-  const errors = validateArticle(article).filter((issue) => issue.level === "error");
+  const errors = validateArticle(article).filter(
+    (issue) => issue.level === "error",
+  );
   if (errors.length) {
     console.warn("[article-generation] output requires editor review", {
       paths: errors.map((issue) => issue.path),
@@ -386,21 +413,25 @@ app.post(
 );
 
 function configuredDomains() {
-  return (process.env.EDITORIAL_DOMAINS ||
-    "Technology,Startups,AI & ML,Science,Engineering,India,Business")
+  return (
+    process.env.EDITORIAL_DOMAINS ||
+    "Technology,Startups,AI & ML,Science,Engineering,India,Business"
+  )
     .split(",")
     .map((domain) => domain.trim())
     .filter(Boolean);
 }
 
 function queueItem(id: string, data: Record<string, any>): EditorialQueueItem {
-  const timestamp = (value: any) => value?.toDate?.().toISOString?.() || value || null;
+  const timestamp = (value: any) =>
+    value?.toDate?.().toISOString?.() || value || null;
   return {
     id,
     ...data,
     receivedAt: timestamp(data.receivedAt),
     updatedAt: timestamp(data.updatedAt),
     publishedAt: timestamp(data.publishedAt),
+    processingStartedAt: timestamp(data.processingStartedAt),
   } as EditorialQueueItem;
 }
 
@@ -411,31 +442,82 @@ const firestoreEditorialStore: EditorialStore = {
       .orderBy("receivedAt", "desc")
       .limit(max)
       .get();
-    return snapshot.docs.map((document) => queueItem(document.id, document.data()));
+    return snapshot.docs.map((document) =>
+      queueItem(document.id, document.data()),
+    );
   },
   async create(item) {
-    const reference = await getFirestore().collection("editorial_queue").add({
-      ...item,
-      source: firestoreSafeIngestStory(item.source),
-      receivedAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
-    });
+    const reference = await getFirestore()
+      .collection("editorial_queue")
+      .add({
+        ...item,
+        source: firestoreSafeIngestStory(item.source),
+        receivedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
     console.info("[editorial] story received", { queueId: reference.id });
     return { id: reference.id, ...item };
   },
   async get(id) {
-    const document = await getFirestore().collection("editorial_queue").doc(id).get();
+    const document = await getFirestore()
+      .collection("editorial_queue")
+      .doc(id)
+      .get();
     return document.exists ? queueItem(document.id, document.data()!) : null;
   },
   async update(id, patch) {
-    await getFirestore().collection("editorial_queue").doc(id).update({
-      ...patch,
-      updatedAt: FieldValue.serverTimestamp(),
+    await getFirestore()
+      .collection("editorial_queue")
+      .doc(id)
+      .update({
+        ...patch,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    if (patch.duplicate)
+      console.info("[editorial] duplicate detected", {
+        queueId: id,
+        kind: patch.duplicate.kind,
+      });
+    if (patch.status === "processing")
+      console.info("[editorial] generation started", { queueId: id });
+    if (patch.status === "ready_for_review")
+      console.info("[editorial] generation succeeded", { queueId: id });
+    if (patch.status === "failed")
+      console.warn("[editorial] validation or generation failed", {
+        queueId: id,
+      });
+  },
+  async claim(id, staleAfterMs) {
+    const db = getFirestore();
+    const reference = db.collection("editorial_queue").doc(id);
+    let claimed = false;
+    await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(reference);
+      if (!snapshot.exists) return;
+      const data = snapshot.data() || {};
+      const status = String(data.status || "");
+      const startedAt =
+        data.processingStartedAt?.toDate?.()?.getTime?.() ||
+        data.updatedAt?.toDate?.()?.getTime?.() ||
+        0;
+      const stale =
+        status === "processing" &&
+        (!startedAt || Date.now() - startedAt >= staleAfterMs);
+      if (status === "processing" && !stale) return;
+      if (!["discovered", "processing"].includes(status)) return;
+      transaction.update(reference, {
+        status: "processing",
+        processingStartedAt: Timestamp.now(),
+        updatedAt: FieldValue.serverTimestamp(),
+        failureReason: null,
+        validationErrors: [],
+      });
+      claimed = true;
     });
-    if (patch.duplicate) console.info("[editorial] duplicate detected", { queueId: id, kind: patch.duplicate.kind });
-    if (patch.status === "processing") console.info("[editorial] generation started", { queueId: id });
-    if (patch.status === "ready_for_review") console.info("[editorial] generation succeeded", { queueId: id });
-    if (patch.status === "failed") console.warn("[editorial] validation or generation failed", { queueId: id });
+    const item = await firestoreEditorialStore.get(id);
+    if (claimed)
+      console.info("[editorial] generation claim acquired", { queueId: id });
+    return { claimed, item };
   },
   async publish(queueId, post) {
     const db = getFirestore();
@@ -443,9 +525,14 @@ const firestoreEditorialStore: EditorialStore = {
     const postReference = db.collection("posts").doc();
     await db.runTransaction(async (transaction) => {
       const queue = await transaction.get(queueReference);
-      if (!queue.exists) throw new EditorialError("not_found", "Editorial item not found.", 404);
+      if (!queue.exists)
+        throw new EditorialError("not_found", "Editorial item not found.", 404);
       if (queue.data()?.status !== "approved") {
-        throw new EditorialError("publish_conflict", "Editorial approval changed. Reload and try again.", 409);
+        throw new EditorialError(
+          "publish_conflict",
+          "Editorial approval changed. Reload and try again.",
+          409,
+        );
       }
       transaction.set(postReference, {
         ...post,
@@ -461,7 +548,10 @@ const firestoreEditorialStore: EditorialStore = {
         failureReason: null,
       });
     });
-    console.info("[editorial] publish succeeded", { queueId, articleId: postReference.id });
+    console.info("[editorial] publish succeeded", {
+      queueId,
+      articleId: postReference.id,
+    });
     return postReference.id;
   },
 };
@@ -472,6 +562,7 @@ const editorialService = new EditorialService(
     generateArticle(sourceText(story), story.domain, feedback),
   configuredDomains(),
   2,
+  false,
 );
 
 function secureTokenMatches(actual: string, expected: string) {
@@ -483,7 +574,8 @@ function secureTokenMatches(actual: string, expected: string) {
 const ingestBuckets = new Map<string, { count: number; resetAt: number }>();
 function requireIngestionSecret(req: Request, res: Response, next: () => void) {
   const configured = process.env.EDITORIAL_INGEST_SECRET || "";
-  if (!configured) return void res.status(503).json({ error: "ingestion_not_configured" });
+  if (!configured)
+    return void res.status(503).json({ error: "ingestion_not_configured" });
   const token = bearer(req);
   if (!token || !secureTokenMatches(token, configured)) {
     return void res.status(401).json({ error: "invalid_ingestion_token" });
@@ -494,14 +586,36 @@ function requireIngestionSecret(req: Request, res: Response, next: () => void) {
   if (current && current.resetAt > now && current.count >= 30) {
     return void res.status(429).json({ error: "rate_limited" });
   }
-  ingestBuckets.set(key, current && current.resetAt > now
-    ? { ...current, count: current.count + 1 }
-    : { count: 1, resetAt: now + 60_000 });
+  ingestBuckets.set(
+    key,
+    current && current.resetAt > now
+      ? { ...current, count: current.count + 1 }
+      : { count: 1, resetAt: now + 60_000 },
+  );
   next();
 }
 
-const editorialToolBuckets = new Map<string, { count: number; resetAt: number }>();
-function requireEditorialToolKey(req: Request, res: Response, next: () => void) {
+function requireEditorialWorker(req: Request, res: Response, next: () => void) {
+  const configured =
+    process.env.CRON_SECRET || process.env.EDITORIAL_WORKER_SECRET || "";
+  if (!configured)
+    return void res.status(503).json({ error: "worker_not_configured" });
+  const token = bearer(req);
+  if (!token || !secureTokenMatches(token, configured)) {
+    return void res.status(401).json({ error: "invalid_worker_token" });
+  }
+  next();
+}
+
+const editorialToolBuckets = new Map<
+  string,
+  { count: number; resetAt: number }
+>();
+function requireEditorialToolKey(
+  req: Request,
+  res: Response,
+  next: () => void,
+) {
   const configured = process.env.CIE_DAILY_TOOL_API_KEY || "";
   if (!configured) {
     return void res.status(503).json({
@@ -525,9 +639,12 @@ function requireEditorialToolKey(req: Request, res: Response, next: () => void) 
       message: "Too many editorial submissions. Try again shortly.",
     });
   }
-  editorialToolBuckets.set(key, current && current.resetAt > now
-    ? { ...current, count: current.count + 1 }
-    : { count: 1, resetAt: now + 60_000 });
+  editorialToolBuckets.set(
+    key,
+    current && current.resetAt > now
+      ? { ...current, count: current.count + 1 }
+      : { count: 1, resetAt: now + 60_000 },
+  );
   next();
 }
 
@@ -539,7 +656,9 @@ async function executeEditorialTool(input: unknown) {
 
 function editorialToolFailure(res: Response, error: unknown) {
   if (error instanceof EditorialToolError) {
-    return res.status(error.status).json({ error: error.code, message: error.message });
+    return res
+      .status(error.status)
+      .json({ error: error.code, message: error.message });
   }
   console.error("[editorial-tool] request failed", error);
   return res.status(500).json({
@@ -550,11 +669,17 @@ function editorialToolFailure(res: Response, error: unknown) {
 
 function editorialFailure(res: Response, error: unknown) {
   if (error instanceof EditorialError) {
-    return res.status(error.status).json({ error: error.code, message: error.message });
+    return res
+      .status(error.status)
+      .json({ error: error.code, message: error.message });
   }
-  const technicalMessage = error instanceof Error ? error.message : String(error);
-  const credentialsUnavailable = Boolean(firebaseAdminInitializationError) ||
-    /default credentials|credential|app\/no-app|service account/i.test(technicalMessage);
+  const technicalMessage =
+    error instanceof Error ? error.message : String(error);
+  const credentialsUnavailable =
+    Boolean(firebaseAdminInitializationError) ||
+    /default credentials|credential|app\/no-app|service account/i.test(
+      technicalMessage,
+    );
   console.error("[editorial] request failed", error);
   if (credentialsUnavailable) {
     return res.status(503).json({
@@ -569,7 +694,9 @@ function editorialFailure(res: Response, error: unknown) {
 }
 
 app.post("/api/editorial-ingest", requireIngestionSecret, async (req, res) => {
-  const stories = Array.isArray(req.body?.stories) ? req.body.stories.slice(0, 10) : [req.body];
+  const stories = Array.isArray(req.body?.stories)
+    ? req.body.stories.slice(0, 10)
+    : [req.body];
   const results: Array<Record<string, unknown>> = [];
   for (const story of stories) {
     try {
@@ -581,8 +708,13 @@ app.post("/api/editorial-ingest", requireIngestionSecret, async (req, res) => {
         });
       }
       if (item.status === "failed") {
-        const category = classifyEditorialFailure(new Error(item.failureReason || "processing failed"));
-        console.warn("[editorial] story processing failed", { queueId: item.id, category });
+        const category = classifyEditorialFailure(
+          new Error(item.failureReason || "processing failed"),
+        );
+        console.warn("[editorial] story processing failed", {
+          queueId: item.id,
+          category,
+        });
         results.push({
           ok: false,
           id: item.id,
@@ -592,33 +724,94 @@ app.post("/api/editorial-ingest", requireIngestionSecret, async (req, res) => {
           duplicate: item.duplicate,
         });
       } else {
-        results.push({ ok: true, id: item.id, status: item.status, duplicate: item.duplicate });
+        results.push({
+          ok: true,
+          id: item.id,
+          status: item.status,
+          duplicate: item.duplicate,
+        });
       }
     } catch (error) {
       const category = classifyEditorialFailure(error);
-      console.error("[editorial] story processing exception", { category, error });
+      console.error("[editorial] story processing exception", {
+        category,
+        error,
+      });
       results.push({
         ok: false,
         error: category,
-        message: error instanceof EditorialError ? error.message : safeEditorialFailureMessage(category),
+        message:
+          error instanceof EditorialError
+            ? error.message
+            : safeEditorialFailureMessage(category),
       });
     }
   }
   const single = !Array.isArray(req.body?.stories);
   const failed = results.every((result) => result.ok === false);
-  return res.status(single && failed ? 400 : 201).json(single ? results[0] : { results });
+  return res
+    .status(single && failed ? 400 : 201)
+    .json(single ? results[0] : { results });
+});
+
+// Vercel Cron invokes this endpoint independently of ingestion. Each item is
+// atomically claimed before generation, so duplicate cron invocations cannot
+// generate the same story concurrently. One item per invocation keeps the
+// work safely below Vercel's function timeout while batches drain over time.
+app.get("/api/editorial-worker", requireEditorialWorker, async (_req, res) => {
+  try {
+    const candidates = (await firestoreEditorialStore.listRecent(100))
+      .filter((item) => {
+        if (item.duplicate) return false;
+        if (item.status === "discovered") return true;
+        if (item.status !== "processing") return false;
+        const started = item.processingStartedAt || item.updatedAt;
+        const timestamp = started ? Date.parse(String(started)) : 0;
+        return (
+          !timestamp ||
+          Date.now() - timestamp >= editorialProcessingStaleAfterMs
+        );
+      })
+      .slice(0, 1);
+    if (!candidates.length)
+      return res.json({
+        ok: true,
+        processed: 0,
+        message: "No pending editorial items.",
+      });
+    const item = candidates[0];
+    const result = await editorialService.process(item.id, item.source);
+    return res.json({
+      ok: true,
+      processed: 1,
+      queueId: item.id,
+      status: result.status,
+    });
+  } catch (error) {
+    const category = classifyEditorialFailure(error);
+    console.error("[editorial-worker] failed", { category, error });
+    return res.status(500).json({
+      ok: false,
+      error: category,
+      message: safeEditorialFailureMessage(category),
+    });
+  }
 });
 
 // REST/OpenAPI adapter for ChatGPT Actions and other server-to-server tools.
 // It deliberately forwards only to ingestion; approval and publishing remain
 // available exclusively inside the authenticated Studio Editorial Inbox.
-app.post("/api/chatgpt/editorial-stories", requireEditorialToolKey, async (req, res) => {
-  try {
-    return res.status(201).json(await executeEditorialTool(req.body));
-  } catch (error) {
-    return editorialToolFailure(res, error);
-  }
-});
+app.post(
+  "/api/chatgpt/editorial-stories",
+  requireEditorialToolKey,
+  async (req, res) => {
+    try {
+      return res.status(201).json(await executeEditorialTool(req.body));
+    } catch (error) {
+      return editorialToolFailure(res, error);
+    }
+  },
+);
 
 // Stateless Streamable HTTP MCP endpoint. Stateless handling is important on
 // serverless hosts because subsequent JSON-RPC requests may reach another
@@ -630,14 +823,19 @@ app.post("/api/mcp", requireEditorialToolKey, async (req, res) => {
     method?: unknown;
     params?: { name?: unknown; arguments?: unknown };
   };
-  if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") {
+  if (
+    !message ||
+    message.jsonrpc !== "2.0" ||
+    typeof message.method !== "string"
+  ) {
     return res.status(400).json({
       jsonrpc: "2.0",
       id: message?.id ?? null,
       error: { code: -32600, message: "Invalid JSON-RPC request" },
     });
   }
-  if (message.method === "notifications/initialized") return res.status(202).end();
+  if (message.method === "notifications/initialized")
+    return res.status(202).end();
   if (message.method === "initialize") {
     return res.json({
       jsonrpc: "2.0",
@@ -676,10 +874,15 @@ app.post("/api/mcp", requireEditorialToolKey, async (req, res) => {
         },
       });
     } catch (error) {
-      const safe = error instanceof EditorialToolError
-        ? { error: error.code, message: error.message }
-        : { error: "editorial_tool_failed", message: "The editorial submission could not be completed." };
-      if (!(error instanceof EditorialToolError)) console.error("[mcp] tool call failed", error);
+      const safe =
+        error instanceof EditorialToolError
+          ? { error: error.code, message: error.message }
+          : {
+              error: "editorial_tool_failed",
+              message: "The editorial submission could not be completed.",
+            };
+      if (!(error instanceof EditorialToolError))
+        console.error("[mcp] tool call failed", error);
       return res.json({
         jsonrpc: "2.0",
         id: message.id ?? null,
@@ -700,7 +903,10 @@ app.post("/api/mcp", requireEditorialToolKey, async (req, res) => {
 
 app.get("/api/editorial", requireAuth, requireStaff, async (_req, res) => {
   try {
-    return res.json({ items: await editorialService.list(), domains: editorialService.domains() });
+    return res.json({
+      items: await editorialService.list(),
+      domains: editorialService.domains(),
+    });
   } catch (error) {
     return editorialFailure(res, error);
   }
@@ -708,43 +914,69 @@ app.get("/api/editorial", requireAuth, requireStaff, async (_req, res) => {
 
 app.patch("/api/editorial/:id", requireAuth, requireStaff, async (req, res) => {
   try {
-    return res.json({ item: await editorialService.edit(String(req.params.id), req.body?.generatedArticle) });
-  } catch (error) {
-    return editorialFailure(res, error);
-  }
-});
-
-app.post("/api/editorial/:id/regenerate", requireAuth, requireStaff, async (req, res) => {
-  try {
-    return res.json({ item: await editorialService.regenerate(String(req.params.id)) });
-  } catch (error) {
-    return editorialFailure(res, error);
-  }
-});
-
-app.post("/api/editorial/:id/reject", requireAuth, requireStaff, async (req, res) => {
-  try {
-    return res.json({ item: await editorialService.reject(String(req.params.id)) });
-  } catch (error) {
-    return editorialFailure(res, error);
-  }
-});
-
-app.post("/api/editorial/:id/publish", requireAuth, requireStaff, async (req: AuthedRequest, res) => {
-  try {
-    const user = req.firebaseUser!;
-    const queueId = String(req.params.id);
-    const item = await editorialService.publish(queueId, {
-      uid: user.uid,
-      name: user.name || user.email?.split("@")[0] || "Editor",
-      email: user.email || "",
+    return res.json({
+      item: await editorialService.edit(
+        String(req.params.id),
+        req.body?.generatedArticle,
+      ),
     });
-    return res.json({ item });
   } catch (error) {
-    console.warn("[editorial] publish failed", { queueId: String(req.params.id) });
     return editorialFailure(res, error);
   }
 });
+
+app.post(
+  "/api/editorial/:id/regenerate",
+  requireAuth,
+  requireStaff,
+  async (req, res) => {
+    try {
+      return res.json({
+        item: await editorialService.regenerate(String(req.params.id)),
+      });
+    } catch (error) {
+      return editorialFailure(res, error);
+    }
+  },
+);
+
+app.post(
+  "/api/editorial/:id/reject",
+  requireAuth,
+  requireStaff,
+  async (req, res) => {
+    try {
+      return res.json({
+        item: await editorialService.reject(String(req.params.id)),
+      });
+    } catch (error) {
+      return editorialFailure(res, error);
+    }
+  },
+);
+
+app.post(
+  "/api/editorial/:id/publish",
+  requireAuth,
+  requireStaff,
+  async (req: AuthedRequest, res) => {
+    try {
+      const user = req.firebaseUser!;
+      const queueId = String(req.params.id);
+      const item = await editorialService.publish(queueId, {
+        uid: user.uid,
+        name: user.name || user.email?.split("@")[0] || "Editor",
+        email: user.email || "",
+      });
+      return res.json({ item });
+    } catch (error) {
+      console.warn("[editorial] publish failed", {
+        queueId: String(req.params.id),
+      });
+      return editorialFailure(res, error);
+    }
+  },
+);
 
 const tokenBuckets = new Map<string, { count: number; reset: number }>();
 app.post("/api/livekit/token", requireAuth, async (req: AuthedRequest, res) => {
@@ -773,11 +1005,15 @@ app.post("/api/livekit/token", requireAuth, async (req: AuthedRequest, res) => {
     }
     if (!stream) return res.status(404).json({ error: "stream_not_found" });
     const canonical = String(
-      stream.roomName || stream.room_name || stream.channelId || stream.channel_name || "",
+      stream.roomName ||
+        stream.room_name ||
+        stream.channelId ||
+        stream.channel_name ||
+        "",
     ).trim();
     if (!canonical || canonical !== roomName)
       return res.status(403).json({ error: "room_mismatch" });
-    
+
     const presenters = [
       stream.hostId,
       stream.host_id,
@@ -790,8 +1026,11 @@ app.post("/api/livekit/token", requireAuth, async (req: AuthedRequest, res) => {
     const canPublish = presenters.includes(uid);
     const status = String(stream.status || "").toLowerCase();
     // Presenters must connect and publish before advertising a live stream.
-    if (stream.endedAt || stream.ended_at ||
-        (status !== "live" && !(canPublish && status === "scheduled")))
+    if (
+      stream.endedAt ||
+      stream.ended_at ||
+      (status !== "live" && !(canPublish && status === "scheduled"))
+    )
       return res.status(409).json({ error: "stream_ended" });
     if (
       stream.isPublic === false &&
@@ -832,181 +1071,241 @@ app.post("/api/livekit/token", requireAuth, async (req: AuthedRequest, res) => {
       expiresInSeconds: 300,
     });
   } catch (error: any) {
-    return res
-      .status(503)
-      .json({
-        error: "token_service_failed",
-        detail: error?.message?.slice(0, 120) || "unknown",
-      });
+    return res.status(503).json({
+      error: "token_service_failed",
+      detail: error?.message?.slice(0, 120) || "unknown",
+    });
   }
 });
 
-app.post("/api/streams", requireAuth, requireStaff, async (req: AuthedRequest, res) => {
-  const uid = req.firebaseUser!.uid;
-  const { id: reqId, title, description, roomName: reqRoom, status, isPublic } = req.body || {};
-  if (!title) return res.status(400).json({ error: "title_required" });
+app.post(
+  "/api/streams",
+  requireAuth,
+  requireStaff,
+  async (req: AuthedRequest, res) => {
+    const uid = req.firebaseUser!.uid;
+    const {
+      id: reqId,
+      title,
+      description,
+      roomName: reqRoom,
+      status,
+      isPublic,
+    } = req.body || {};
+    if (!title) return res.status(400).json({ error: "title_required" });
 
-  const streamId = String(reqId || "").trim() || `stream_${Date.now()}`;
-  const roomName = String(reqRoom || "").trim() || `cie_${streamId.replace(/[^A-Za-z0-9]/g, "")}`;
-  const hostName = req.firebaseUser?.name || req.firebaseUser?.email || "Host";
+    const streamId = String(reqId || "").trim() || `stream_${Date.now()}`;
+    const roomName =
+      String(reqRoom || "").trim() ||
+      `cie_${streamId.replace(/[^A-Za-z0-9]/g, "")}`;
+    const hostName =
+      req.firebaseUser?.name || req.firebaseUser?.email || "Host";
 
-  const livekitUrl = "wss://cie-daily-79ts1icb.livekit.cloud";
-  const isLive = false; // Never advertise an unconnected presenter as live.
-  const streamData = {
-    id: streamId,
-    title: String(title).trim(),
-    description: String(description || "").trim(),
-    roomName,
-    room_name: roomName,
-    channelId: roomName,
-    channel_name: roomName,
-    spaceId: streamId,
-    space_id: streamId,
-    hostId: uid,
-    host_id: uid,
-    hostName,
-    host_name: hostName,
-    presenterId: uid,
-    presenter_id: uid,
-    presenterIds: [uid],
-    status: isLive ? "live" : "scheduled",
-    isLive,
-    is_live: isLive,
-    isPublic: isPublic !== false,
-    is_public: isPublic !== false,
-    participantCount: 0,
-    participant_count: 0,
-    viewersCount: 0,
-    viewers_count: 0,
-    peakViewerCount: 0,
-    peak_viewer_count: 0,
-    livekitUrl,
-    livekit_url: livekitUrl,
-    serverUrl: livekitUrl,
-    server_url: livekitUrl,
-  };
-
-  try {
-    try {
-      const db = getFirestore();
-      const existing = await db.collection("liveStreams").doc(streamId).get();
-      if (existing.exists && existing.data()?.hostId !== uid)
-        return res.status(403).json({ error: "not_authorized" });
-      await db.collection("liveStreams").doc(streamId).set({
-        ...streamData,
-        createdAt: FieldValue.serverTimestamp(),
-      }, { merge: true });
-      await db.collection("live_spaces").doc(streamId).set({
-        ...streamData,
-        createdAt: FieldValue.serverTimestamp(),
-      }, { merge: true });
-      return res.json({ ok: true, id: streamId, roomName });
-    } catch (adminErr: any) {
-      console.warn("Admin SDK write notice, attempting REST API fallback:", adminErr?.message);
-    }
-
-    const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/liveStreams?documentId=${encodeURIComponent(streamId)}`;
-    const firestoreBody = {
-      fields: {
-        id: { stringValue: streamId },
-        title: { stringValue: streamData.title },
-        description: { stringValue: streamData.description },
-        roomName: { stringValue: streamData.roomName },
-        room_name: { stringValue: streamData.roomName },
-        channelId: { stringValue: streamData.roomName },
-        spaceId: { stringValue: streamId },
-        hostId: { stringValue: uid },
-        host_id: { stringValue: uid },
-        hostName: { stringValue: hostName },
-        host_name: { stringValue: hostName },
-        presenterId: { stringValue: uid },
-        presenter_id: { stringValue: uid },
-        presenterIds: { arrayValue: { values: [{ stringValue: uid }] } },
-        status: { stringValue: streamData.status },
-        isLive: { booleanValue: isLive },
-        is_live: { booleanValue: isLive },
-        isPublic: { booleanValue: streamData.isPublic },
-        is_public: { booleanValue: streamData.isPublic },
-        participantCount: { integerValue: "0" },
-        peakViewerCount: { integerValue: "0" },
-        livekitUrl: { stringValue: livekitUrl },
-        livekit_url: { stringValue: livekitUrl },
-        serverUrl: { stringValue: livekitUrl },
-        createdAt: { timestampValue: new Date().toISOString() },
-      },
+    const livekitUrl = "wss://cie-daily-79ts1icb.livekit.cloud";
+    const isLive = false; // Never advertise an unconnected presenter as live.
+    const streamData = {
+      id: streamId,
+      title: String(title).trim(),
+      description: String(description || "").trim(),
+      roomName,
+      room_name: roomName,
+      channelId: roomName,
+      channel_name: roomName,
+      spaceId: streamId,
+      space_id: streamId,
+      hostId: uid,
+      host_id: uid,
+      hostName,
+      host_name: hostName,
+      presenterId: uid,
+      presenter_id: uid,
+      presenterIds: [uid],
+      status: isLive ? "live" : "scheduled",
+      isLive,
+      is_live: isLive,
+      isPublic: isPublic !== false,
+      is_public: isPublic !== false,
+      participantCount: 0,
+      participant_count: 0,
+      viewersCount: 0,
+      viewers_count: 0,
+      peakViewerCount: 0,
+      peak_viewer_count: 0,
+      livekitUrl,
+      livekit_url: livekitUrl,
+      serverUrl: livekitUrl,
+      server_url: livekitUrl,
     };
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${req.idToken}`,
-      },
-      body: JSON.stringify(firestoreBody),
-    });
-
-    if (!response.ok) {
-      const errBody: any = await response.json().catch(() => ({}));
-      throw new Error(errBody.error?.message || `Firestore REST status: ${response.status}`);
-    }
-
-    return res.json({ ok: true, id: streamId, roomName });
-  } catch (error: any) {
-    console.error("Stream creation server error:", error);
-    return res.status(500).json({ error: "stream_creation_failed", detail: error?.message || "Unknown error" });
-  }
-});
-
-app.delete("/api/streams/:id", requireAuth, requireStaff, async (req: AuthedRequest, res) => {
-  const streamId = String(req.params.id || "").trim();
-  if (!streamId) return res.status(400).json({ error: "invalid_id" });
-
-  try {
     try {
-      const db = getFirestore();
-      const existing = await db.collection("liveStreams").doc(streamId).get();
-      if (existing.exists && existing.data()?.hostId !== req.firebaseUser!.uid)
-        return res.status(403).json({ error: "not_authorized" });
-      await db.collection("liveStreams").doc(streamId).delete();
+      try {
+        const db = getFirestore();
+        const existing = await db.collection("liveStreams").doc(streamId).get();
+        if (existing.exists && existing.data()?.hostId !== uid)
+          return res.status(403).json({ error: "not_authorized" });
+        await db
+          .collection("liveStreams")
+          .doc(streamId)
+          .set(
+            {
+              ...streamData,
+              createdAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true },
+          );
+        await db
+          .collection("live_spaces")
+          .doc(streamId)
+          .set(
+            {
+              ...streamData,
+              createdAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true },
+          );
+        return res.json({ ok: true, id: streamId, roomName });
+      } catch (adminErr: any) {
+        console.warn(
+          "Admin SDK write notice, attempting REST API fallback:",
+          adminErr?.message,
+        );
+      }
+
+      const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/liveStreams?documentId=${encodeURIComponent(streamId)}`;
+      const firestoreBody = {
+        fields: {
+          id: { stringValue: streamId },
+          title: { stringValue: streamData.title },
+          description: { stringValue: streamData.description },
+          roomName: { stringValue: streamData.roomName },
+          room_name: { stringValue: streamData.roomName },
+          channelId: { stringValue: streamData.roomName },
+          spaceId: { stringValue: streamId },
+          hostId: { stringValue: uid },
+          host_id: { stringValue: uid },
+          hostName: { stringValue: hostName },
+          host_name: { stringValue: hostName },
+          presenterId: { stringValue: uid },
+          presenter_id: { stringValue: uid },
+          presenterIds: { arrayValue: { values: [{ stringValue: uid }] } },
+          status: { stringValue: streamData.status },
+          isLive: { booleanValue: isLive },
+          is_live: { booleanValue: isLive },
+          isPublic: { booleanValue: streamData.isPublic },
+          is_public: { booleanValue: streamData.isPublic },
+          participantCount: { integerValue: "0" },
+          peakViewerCount: { integerValue: "0" },
+          livekitUrl: { stringValue: livekitUrl },
+          livekit_url: { stringValue: livekitUrl },
+          serverUrl: { stringValue: livekitUrl },
+          createdAt: { timestampValue: new Date().toISOString() },
+        },
+      };
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${req.idToken}`,
+        },
+        body: JSON.stringify(firestoreBody),
+      });
+
+      if (!response.ok) {
+        const errBody: any = await response.json().catch(() => ({}));
+        throw new Error(
+          errBody.error?.message || `Firestore REST status: ${response.status}`,
+        );
+      }
+
+      return res.json({ ok: true, id: streamId, roomName });
+    } catch (error: any) {
+      console.error("Stream creation server error:", error);
+      return res
+        .status(500)
+        .json({
+          error: "stream_creation_failed",
+          detail: error?.message || "Unknown error",
+        });
+    }
+  },
+);
+
+app.delete(
+  "/api/streams/:id",
+  requireAuth,
+  requireStaff,
+  async (req: AuthedRequest, res) => {
+    const streamId = String(req.params.id || "").trim();
+    if (!streamId) return res.status(400).json({ error: "invalid_id" });
+
+    try {
+      try {
+        const db = getFirestore();
+        const existing = await db.collection("liveStreams").doc(streamId).get();
+        if (
+          existing.exists &&
+          existing.data()?.hostId !== req.firebaseUser!.uid
+        )
+          return res.status(403).json({ error: "not_authorized" });
+        await db.collection("liveStreams").doc(streamId).delete();
+        return res.json({ ok: true });
+      } catch (adminErr: any) {
+        console.warn("Admin SDK delete notice:", adminErr?.message);
+      }
+
+      const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/liveStreams/${encodeURIComponent(streamId)}`;
+      const response = await fetch(url, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${req.idToken}`,
+        },
+      });
+
+      if (!response.ok && response.status !== 404) {
+        throw new Error(`Firestore REST status: ${response.status}`);
+      }
+
       return res.json({ ok: true });
-    } catch (adminErr: any) {
-      console.warn("Admin SDK delete notice:", adminErr?.message);
+    } catch (error: any) {
+      return res
+        .status(500)
+        .json({ error: "stream_deletion_failed", detail: error?.message });
     }
-
-    const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/liveStreams/${encodeURIComponent(streamId)}`;
-    const response = await fetch(url, {
-      method: "DELETE",
-      headers: {
-        Authorization: `Bearer ${req.idToken}`,
-      },
-    });
-
-    if (!response.ok && response.status !== 404) {
-      throw new Error(`Firestore REST status: ${response.status}`);
-    }
-
-    return res.json({ ok: true });
-  } catch (error: any) {
-    return res.status(500).json({ error: "stream_deletion_failed", detail: error?.message });
-  }
-});
+  },
+);
 
 // Keep API failures machine-readable. Without this guard, the SPA fallback can
 // return HTML for a mistyped or unavailable API route and obscure the real error.
-app.use("/api", (error: unknown, req: Request, res: Response, next: (error?: unknown) => void) => {
-  if (res.headersSent) return next(error);
-  console.error("[api] unhandled request failure", { method: req.method, path: req.originalUrl, error });
-  if (error instanceof SyntaxError && (error as SyntaxError & { status?: number }).status === 400) {
-    return res.status(400).json({
-      error: "invalid_json",
-      message: "The request body must contain valid JSON.",
+app.use(
+  "/api",
+  (
+    error: unknown,
+    req: Request,
+    res: Response,
+    next: (error?: unknown) => void,
+  ) => {
+    if (res.headersSent) return next(error);
+    console.error("[api] unhandled request failure", {
+      method: req.method,
+      path: req.originalUrl,
+      error,
     });
-  }
-  return res.status(500).json({
-    error: "service_unavailable",
-    message: "The requested service is temporarily unavailable.",
-  });
-});
+    if (
+      error instanceof SyntaxError &&
+      (error as SyntaxError & { status?: number }).status === 400
+    ) {
+      return res.status(400).json({
+        error: "invalid_json",
+        message: "The request body must contain valid JSON.",
+      });
+    }
+    return res.status(500).json({
+      error: "service_unavailable",
+      message: "The requested service is temporarily unavailable.",
+    });
+  },
+);
 
 app.use("/api", (req, res) =>
   res.status(404).json({
@@ -1019,39 +1318,46 @@ const port = Number(process.env.STUDIO_PORT || 3100);
 export default app;
 
 async function startServer() {
-if (process.env.NODE_ENV === "production") {
-  const root = path.dirname(fileURLToPath(import.meta.url));
-  app.use(
-    express.static(path.join(root, "dist"), {
-      setHeaders(res, filePath) {
-        if (filePath.endsWith("index.html")) {
-          res.setHeader("Cache-Control", "no-store, max-age=0");
-        } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
-          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        }
-      },
-    }),
-  );
-  app.get("/{*splat}", (_req, res) => {
-    res.setHeader("Cache-Control", "no-store, max-age=0");
-    return res.sendFile(path.join(root, "dist", "index.html"));
-  });
-  const productionServer = app.listen(port, "127.0.0.1", () =>
-    console.log(`CIE Daily Studio listening on http://127.0.0.1:${port}`),
-  );
-  productionServer.on("error", (error) => console.error("Studio server error", error));
-} else {
-  const { createServer } = await import("vite");
-  const vite = await createServer({
-    server: { middlewareMode: true },
-    appType: "spa",
-  });
-  app.use(vite.middlewares);
-  const developmentServer = app.listen(port, "127.0.0.1", () =>
-    console.log(`CIE Daily Studio listening on http://127.0.0.1:${port}`),
-  );
-  developmentServer.on("error", (error) => console.error("Studio server error", error));
-}
+  if (process.env.NODE_ENV === "production") {
+    const root = path.dirname(fileURLToPath(import.meta.url));
+    app.use(
+      express.static(path.join(root, "dist"), {
+        setHeaders(res, filePath) {
+          if (filePath.endsWith("index.html")) {
+            res.setHeader("Cache-Control", "no-store, max-age=0");
+          } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+            res.setHeader(
+              "Cache-Control",
+              "public, max-age=31536000, immutable",
+            );
+          }
+        },
+      }),
+    );
+    app.get("/{*splat}", (_req, res) => {
+      res.setHeader("Cache-Control", "no-store, max-age=0");
+      return res.sendFile(path.join(root, "dist", "index.html"));
+    });
+    const productionServer = app.listen(port, "127.0.0.1", () =>
+      console.log(`CIE Daily Studio listening on http://127.0.0.1:${port}`),
+    );
+    productionServer.on("error", (error) =>
+      console.error("Studio server error", error),
+    );
+  } else {
+    const { createServer } = await import("vite");
+    const vite = await createServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+    const developmentServer = app.listen(port, "127.0.0.1", () =>
+      console.log(`CIE Daily Studio listening on http://127.0.0.1:${port}`),
+    );
+    developmentServer.on("error", (error) =>
+      console.error("Studio server error", error),
+    );
+  }
 }
 
 // Vercel invokes the exported Express handler; it must not start Vite or listen.
