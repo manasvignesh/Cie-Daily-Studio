@@ -21,6 +21,7 @@ import {
   type IngestStory,
 } from "./src/lib/editorial-automation.ts";
 import type { Article } from "./src/lib/types.ts";
+import { validateArticle } from "./src/lib/article-contract.ts";
 
 const projectId =
   process.env.FIREBASE_PROJECT_ID ||
@@ -192,7 +193,7 @@ app.get("/api/health", async (_req, res) => {
   });
 });
 
-const prompt = `You are the editorial engine for CIE Daily. Structure only the supplied reporting; do not add outside knowledge. Never invent or alter numbers, dates, names, locations, quotes, company names, capacities, targets, or statistics. If a detail is absent, omit it. Return strict JSON with exactly two independent representations: quick_brief and full_article. quick_brief has category, headline, quick_summary (35-60 words), three_things_to_know (exactly 3 concise facts), key_number ({value,label} or null). full_article has headline, hook, in_20_seconds, what_happened (60+ words), why_this_matters (50+ words), bigger_picture, key_stats (array of {value,label}), explore_sections (3-6 story-specific sections, each with title, summary, content, items [{title,description}]), takeaways (3-5), quote ({text,speaker,role} or null). Do not copy the brief into the full article. Output JSON only.`;
+const prompt = `You are the editorial engine for CIE Daily. Structure only the supplied reporting; do not add outside knowledge. Never invent or alter numbers, dates, names, locations, quotes, company names, capacities, targets, or statistics. If a detail is absent, omit it. Return strict JSON with exactly two independent representations: quick_brief and full_article. Every named field is required; use an empty array or null only where the schema explicitly permits it. quick_brief has category, headline, quick_summary (35-60 words), three_things_to_know (exactly 3 concise facts), key_number ({value,label} or null). full_article has headline, hook, in_20_seconds, what_happened (60+ words), why_this_matters (50+ words), bigger_picture, key_stats (array of {value,label}), explore_sections (3-6 story-specific sections, each with title, summary, content, items [{title,description}]), takeaways (3-5 substantive strings, never omit this field), quote ({text,speaker,role} or null). The combined full_article reading content must be at least 200 words. Do not copy the brief into the full article. Output JSON only.`;
 
 function parseGeneratedArticle(raw: string) {
   const cleaned = raw
@@ -241,6 +242,17 @@ async function generateArticle(
   if (!text) throw new Error("empty_ai_response");
   return parseGeneratedArticle(text);
 }
+
+async function generatePublishableArticle(source: string, category: string) {
+  let feedback: string[] = [];
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const article = await generateArticle(source, category, feedback);
+    const issues = validateArticle(article);
+    if (!issues.length) return article;
+    feedback = issues.map((issue) => `${issue.path}: ${issue.message}`);
+  }
+  throw new Error("generated_article_failed_contract");
+}
 app.post(
   "/api/generate-article",
   requireAuth,
@@ -252,7 +264,7 @@ app.post(
     if (!process.env.NVIDIA_API_KEY)
       return res.status(503).json({ error: "ai_not_configured" });
     try {
-      const article = await generateArticle(
+      const article = await generatePublishableArticle(
         source,
         String(req.body?.category || "General"),
       );
