@@ -317,9 +317,10 @@ async function generateArticle(
   const retryNote = validationFeedback.length
     ? `\nThe previous output failed these checks. Correct them without adding facts:\n- ${validationFeedback.join("\n- ")}`
     : "";
-  // Keep provider calls well below Vercel's 60-second function budget so a
-  // fallback (or terminal failure write) still has time to complete.
-  const timeout = 18_000;
+  // Each process() may make two provider attempts, and each provider call may
+  // try Gemini then NVIDIA. Keep the per-call budget low enough that fallback,
+  // retry, and the terminal Firestore write all finish before Vercel's limit.
+  const timeout = 10_000;
   let lastError: unknown;
   for (let index = 0; index < providers.length; index += 1) {
     const provider = providers[index];
