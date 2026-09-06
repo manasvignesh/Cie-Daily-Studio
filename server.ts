@@ -29,6 +29,11 @@ import { validateArticle } from "./src/lib/article-contract.ts";
 import { firestoreSafeValue } from "./src/lib/firestore-safe.ts";
 import { resolveArticleImage } from "./src/lib/article-images.ts";
 import {
+  editorialGenerationBudgetMs,
+  editorialPersistenceReserveMs,
+  providerTimeoutMs,
+} from "./src/lib/generation-budget.ts";
+import {
   EditorialToolError,
   submitEditorialStories,
   submitEditorialStoryTool,
@@ -317,15 +322,18 @@ async function generateArticle(
   const retryNote = validationFeedback.length
     ? `\nThe previous output failed these checks. Correct them without adding facts:\n- ${validationFeedback.join("\n- ")}`
     : "";
-  // Bound the entire provider chain, not just one HTTP call. A process() may
-  // retry generation, so each chain must leave time for the terminal write.
-  const generationDeadline = Date.now() + 20_000;
+  // Bound the entire provider chain, not just one HTTP call. The worker keeps
+  // one article per invocation, leaving a persistence reserve below Vercel's
+  // hard function limit. A timeout is deliberately terminal for this attempt;
+  // the next stale/retry run can try again without risking a 504.
+  const generationStartedAt = Date.now();
+  const generationDeadline = generationStartedAt + editorialGenerationBudgetMs;
   let lastError: unknown;
   for (let index = 0; index < providers.length; index += 1) {
     const provider = providers[index];
-    const remaining = generationDeadline - Date.now();
-    if (remaining <= 500) break;
-    const timeout = Math.min(10_000, Math.max(1_000, remaining - 500));
+    const elapsedMs = Date.now() - generationStartedAt;
+    const timeout = providerTimeoutMs(provider.name as "gemini" | "nvidia", elapsedMs);
+    if (!timeout) break;
     try {
       const ai = new OpenAI({
         apiKey: provider.apiKey,
@@ -354,15 +362,42 @@ async function generateArticle(
       console.info("[article-generation] provider succeeded", {
         provider: provider.name,
         attempt: index + 1,
+        elapsedMs: Date.now() - generationStartedAt,
+        remainingBudgetMs: Math.max(0, generationDeadline - Date.now()),
       });
       return article;
     } catch (error) {
       lastError = error;
+      const elapsedAfterErrorMs = Date.now() - generationStartedAt;
+      const remainingAfterErrorMs = Math.max(0, generationDeadline - Date.now());
+      const providerTimedOut = /timeout|timed.?out|abort|deadline/i.test(
+        `${(error as { code?: unknown })?.code || ""} ${(error as { name?: unknown })?.name || ""} ${error instanceof Error ? error.message : ""}`,
+      );
+      console.warn("[article-generation] provider failed", {
+        provider: provider.name,
+        elapsedMs: elapsedAfterErrorMs,
+        remainingBudgetMs: remainingAfterErrorMs,
+        timeoutReason: providerTimedOut || remainingAfterErrorMs <= editorialPersistenceReserveMs
+          ? "provider_timeout_or_budget_exhausted"
+          : undefined,
+      });
+      if (providerTimedOut && remainingAfterErrorMs <= editorialPersistenceReserveMs) {
+        const timeoutError = new Error("editorial_generation_timeout");
+        (timeoutError as { code?: string }).code = "EDITORIAL_GENERATION_TIMEOUT";
+        throw timeoutError;
+      }
       if (index === providers.length - 1 || !canTryAnotherNvidiaKey(error)) throw error;
+      if (provider.name === "gemini" && remainingAfterErrorMs <= editorialPersistenceReserveMs + 1_000) {
+        const timeoutError = new Error("editorial_generation_timeout");
+        (timeoutError as { code?: string }).code = "EDITORIAL_GENERATION_TIMEOUT";
+        throw timeoutError;
+      }
       const value = error as { status?: number; code?: string };
       console.warn("[article-generation] retrying with fallback provider", {
         provider: provider.name,
         attempt: index + 1,
+        elapsedMs: elapsedAfterErrorMs,
+        remainingBudgetMs: remainingAfterErrorMs,
         status: value?.status,
         code: value?.code,
       });

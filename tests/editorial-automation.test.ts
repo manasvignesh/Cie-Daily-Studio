@@ -13,6 +13,35 @@ import {
 } from '../src/lib/editorial-automation';
 import type { Article } from '../src/lib/types';
 import { firestoreSafeValue } from '../src/lib/firestore-safe';
+import {
+  editorialGenerationBudgetMs,
+  editorialPersistenceReserveMs,
+  providerTimeoutMs,
+} from '../src/lib/generation-budget';
+
+test('generation budgets leave persistence time for realistic article durations', () => {
+  assert.equal(providerTimeoutMs('gemini', 10_000), 28_000);
+  assert.equal(providerTimeoutMs('gemini', 25_000), 13_000);
+  assert.equal(providerTimeoutMs('gemini', 35_000), 3_000);
+  assert.equal(providerTimeoutMs('gemini', 45_000), 0);
+  assert.equal(editorialGenerationBudgetMs - editorialPersistenceReserveMs, 38_000);
+});
+
+test('timeout failures do not spend a second generation attempt in one worker request', async () => {
+  const store = new MemoryStore();
+  let calls = 0;
+  const service = new EditorialService(store, async () => {
+    calls += 1;
+    const timeout = new Error('editorial_generation_timeout');
+    (timeout as { code?: string }).code = 'EDITORIAL_GENERATION_TIMEOUT';
+    throw timeout;
+  }, defaultDomainsForTest(), 2, false);
+  const queued = await service.ingest(story);
+  const failed = await service.process(queued.id, story);
+  assert.equal(calls, 1);
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.failureReason || '', /^timeout:/);
+});
 
 test('recursively removes undefined values from nested editorial documents', () => {
   const timestamp = new Date('2026-09-06T00:00:00Z');

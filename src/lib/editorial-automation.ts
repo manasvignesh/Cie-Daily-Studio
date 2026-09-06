@@ -451,6 +451,11 @@ export class EditorialService {
       } catch (error) {
         lastFailure = safeFailure(error);
         feedback = [lastFailure];
+        // A provider deadline is already bounded to leave time for the
+        // terminal Firestore write. Do not immediately spend another full
+        // generation attempt in the same Vercel invocation; the next worker
+        // retry/manual regenerate can safely try again.
+        if (classifyEditorialFailure(error) === 'timeout') break;
       }
     }
     await this.store.update(id, {
