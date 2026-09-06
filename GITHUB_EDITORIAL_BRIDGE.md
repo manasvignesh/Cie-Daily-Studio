@@ -8,7 +8,8 @@ or publishing behavior.
 Labeled GitHub issue
   -> GitHub Action validates the body
   -> POST /api/editorial-ingest with EDITORIAL_INGEST_SECRET
-  -> editorial_queue
+  -> editorial_queue (discovered)
+  -> Vercel Cron worker (processing)
   -> existing NVIDIA generation
   -> ready_for_review
   -> human review in Studio
@@ -76,13 +77,16 @@ HTTP(S) URLs and source-supported facts.
 - Validates title, JSON, batch size, URLs, dates, domains, summaries, and facts.
 - Posts the canonical `{ "stories": [...] }` payload to the production
   `https://cie-daily-studio.vercel.app/api/editorial-ingest` endpoint.
-- Comments success and failure counts plus queue IDs on the issue.
-- Closes the issue only when every submitted story is accepted by ingestion.
+- Comments queue success/failure counts plus queue IDs immediately after
+  ingestion. Generation continues independently in the worker.
+- Closes the issue when every submitted story is accepted into the queue.
 - Leaves failed or partially failed issues open with a safe diagnostic.
 
-The production ingestion endpoint performs duplicate detection, calls the same
-NVIDIA generation service as manual Generate, validates the Swipe Deck and Full
-Story schema, and stops at `ready_for_review`.
+The production ingestion endpoint performs validation and duplicate detection
+only. It returns quickly after queue creation. Vercel Cron calls the worker,
+which claims items safely, calls the same NVIDIA generation service as manual
+Generate, validates the Swipe Deck and Full Story schema, recovers stale claims,
+and stops at `ready_for_review`.
 
 ## Manual test
 

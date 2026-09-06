@@ -27,6 +27,12 @@ test('removes undefined optional fields before Firestore serialization', () => {
   assert.equal('location' in safe, false);
 });
 
+test('removes undefined optional fields before Firestore serialization', () => {
+  const safe = firestoreSafeIngestStory({ ...story, imageUrl: undefined, location: undefined });
+  assert.equal('imageUrl' in safe, false);
+  assert.equal('location' in safe, false);
+});
+
 const story: IngestStory = {
   title: 'Indian students build a low-cost satellite communications platform',
   sourceUrl: 'https://example.com/news/student-satellite?utm_source=social',
@@ -137,6 +143,42 @@ test('malformed payload is rejected before queue creation', async () => {
   await assert.rejects(() => service.ingest({ title: 'Bad' }), (error: EditorialError) => error.code === 'invalid_payload');
   assert.equal(store.items.size, 0);
 });
+
+test('async ingestion returns before a slow generation and resolves later', async () => {
+  const store = new MemoryStore();
+  let resolveGeneration!: (value: Pick<Article, 'quick_brief' | 'full_article'>) => void;
+  const pending = new Promise<Pick<Article, 'quick_brief' | 'full_article'>>((resolve) => {
+    resolveGeneration = resolve;
+  });
+  const service = new EditorialService(store, async () => pending, defaultDomainsForTest(), 2, false);
+  const started = Date.now();
+  const queued = await service.ingest(story);
+  assert.ok(Date.now() - started < 500, 'queue creation must not wait for generation');
+  assert.equal(queued.status, 'discovered');
+  const processing = service.process(queued.id, story);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal((await store.get(queued.id))?.status, 'processing');
+  resolveGeneration(generated);
+  assert.equal((await processing).status, 'ready_for_review');
+});
+
+test('a batch of ten stories queues without synchronous generation', async () => {
+  const store = new MemoryStore();
+  const service = new EditorialService(store, async () => generated, defaultDomainsForTest(), 2, false);
+  for (let index = 0; index < 10; index += 1) {
+    const queued = await service.ingest({
+      ...story,
+      title: `${story.title} ${index + 1}`,
+      sourceUrl: `https://example.com/news/student-satellite-${index + 1}`,
+    });
+    assert.equal(queued.status, 'discovered');
+  }
+  assert.equal(store.items.size, 10);
+});
+
+function defaultDomainsForTest() {
+  return ['Technology', 'Startups', 'AI & ML', 'Science', 'Engineering', 'India', 'Business'];
+}
 
 test('exact and likely duplicates stop before generation', async () => {
   const store = new MemoryStore();

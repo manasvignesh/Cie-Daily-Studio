@@ -49,6 +49,7 @@ export type EditorialQueueItem = {
   failureReason: string | null;
   generationAttempts: number;
   publishedArticleId: string | null;
+  processingStartedAt?: unknown;
   receivedAt?: unknown;
   updatedAt?: unknown;
   publishedAt?: unknown;
@@ -59,6 +60,7 @@ export type EditorialStore = {
   create(item: Omit<EditorialQueueItem, 'id'>): Promise<EditorialQueueItem>;
   get(id: string): Promise<EditorialQueueItem | null>;
   update(id: string, patch: Partial<EditorialQueueItem>): Promise<void>;
+  claim?: (id: string, staleAfterMs: number) => Promise<{ claimed: boolean; item: EditorialQueueItem | null }>;
   publish(
     queueId: string,
     post: Record<string, unknown>,
@@ -69,6 +71,8 @@ export type EditorialGenerator = (
   source: IngestStory,
   validationFeedback?: string[],
 ) => Promise<Pick<Article, 'quick_brief' | 'full_article'>>;
+
+export const editorialProcessingStaleAfterMs = 5 * 60 * 1000;
 
 export type EditorialIdentity = {
   uid: string;
@@ -321,6 +325,7 @@ export class EditorialService {
     private readonly generator: EditorialGenerator,
     private readonly allowedDomains = defaultDomains,
     private readonly maxGenerationAttempts = 2,
+    private readonly processOnIngest = true,
   ) {}
 
   domains() {
@@ -349,17 +354,24 @@ export class EditorialService {
       failureReason: null,
       generationAttempts: 0,
       publishedArticleId: null,
+      processingStartedAt: null,
     });
-    if (duplicate) return created;
+    if (duplicate || !this.processOnIngest) return created;
     return this.process(created.id, story);
   }
 
   async process(id: string, story: IngestStory) {
-    await this.store.update(id, {
-      status: 'processing',
-      failureReason: null,
-      validationErrors: [],
-    });
+    if (this.store.claim) {
+      const claim = await this.store.claim(id, editorialProcessingStaleAfterMs);
+      if (!claim.claimed) return claim.item ?? (await this.required(id));
+    } else {
+      await this.store.update(id, {
+        status: 'processing',
+        processingStartedAt: new Date().toISOString(),
+        failureReason: null,
+        validationErrors: [],
+      });
+    }
     let feedback: string[] = [];
     let lastFailure = '';
     for (let attempt = 1; attempt <= this.maxGenerationAttempts; attempt += 1) {
@@ -375,6 +387,7 @@ export class EditorialService {
           status: 'ready_for_review',
           generatedArticle: article,
           generationAttempts: attempt,
+          processingStartedAt: null,
           validationErrors: [],
           failureReason: null,
           duplicate: null,
@@ -388,6 +401,7 @@ export class EditorialService {
     await this.store.update(id, {
       status: 'failed',
       generationAttempts: this.maxGenerationAttempts,
+      processingStartedAt: null,
       validationErrors: feedback,
       failureReason: lastFailure || 'Generation failed validation',
     });
@@ -396,7 +410,17 @@ export class EditorialService {
 
   async regenerate(id: string) {
     const item = await this.required(id);
-    return this.process(id, item.source);
+    if (item.status === 'published' || item.status === 'rejected') {
+      throw new EditorialError('invalid_status', 'Published or rejected items cannot be regenerated.', 409);
+    }
+    await this.store.update(id, {
+      status: 'discovered',
+      processingStartedAt: null,
+      generationAttempts: 0,
+      validationErrors: [],
+      failureReason: null,
+    });
+    return (await this.store.get(id))!;
   }
 
   async edit(id: string, generatedArticle: Article) {

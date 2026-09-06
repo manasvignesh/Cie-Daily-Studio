@@ -597,7 +597,7 @@ async function editorialRequest(path: string, init: RequestInit = {}) {
 }
 
 const editorialStatusLabel: Record<string, string> = {
-  discovered: "Needs duplicate review",
+  discovered: "Queued",
   processing: "Generating",
   ready_for_review: "Ready for review",
   approved: "Publishing",
@@ -614,8 +614,8 @@ function EditorialInbox() {
     [selected, setSelected] = useState<EditorialQueueItem | null>(null),
     [busyId, setBusyId] = useState("");
 
-  async function load() {
-    setLoading(true);
+  async function load(showLoading = true) {
+    if (showLoading) setLoading(true);
     setError("");
     try {
       const body = await editorialRequest("/api/editorial");
@@ -628,6 +628,8 @@ function EditorialInbox() {
   }
   useEffect(() => {
     void load();
+    const timer = window.setInterval(() => void load(false), 10_000);
+    return () => window.clearInterval(timer);
   }, []);
 
   async function action(item: EditorialQueueItem, operation: "regenerate" | "reject" | "publish") {

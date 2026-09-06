@@ -9,13 +9,14 @@ import {
   getApps,
 } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
-import { getFirestore, FieldValue } from "firebase-admin/firestore";
+import { getFirestore, FieldValue, Timestamp } from "firebase-admin/firestore";
 import { AccessToken } from "livekit-server-sdk";
 import OpenAI from "openai";
 import {
   EditorialError,
   EditorialService,
   classifyEditorialFailure,
+  editorialProcessingStaleAfterMs,
   firestoreSafeIngestStory,
   safeEditorialFailureMessage,
   sourceText,
@@ -401,6 +402,7 @@ function queueItem(id: string, data: Record<string, any>): EditorialQueueItem {
     receivedAt: timestamp(data.receivedAt),
     updatedAt: timestamp(data.updatedAt),
     publishedAt: timestamp(data.publishedAt),
+    processingStartedAt: timestamp(data.processingStartedAt),
   } as EditorialQueueItem;
 }
 
@@ -437,6 +439,33 @@ const firestoreEditorialStore: EditorialStore = {
     if (patch.status === "ready_for_review") console.info("[editorial] generation succeeded", { queueId: id });
     if (patch.status === "failed") console.warn("[editorial] validation or generation failed", { queueId: id });
   },
+  async claim(id, staleAfterMs) {
+    const db = getFirestore();
+    const reference = db.collection("editorial_queue").doc(id);
+    let claimed = false;
+    await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(reference);
+      if (!snapshot.exists) return;
+      const data = snapshot.data() || {};
+      const status = String(data.status || "");
+      const startedAt = data.processingStartedAt?.toDate?.()?.getTime?.() ||
+        data.updatedAt?.toDate?.()?.getTime?.() || 0;
+      const stale = status === "processing" && (!startedAt || Date.now() - startedAt >= staleAfterMs);
+      if (status === "processing" && !stale) return;
+      if (!["discovered", "processing"].includes(status)) return;
+      transaction.update(reference, {
+        status: "processing",
+        processingStartedAt: Timestamp.now(),
+        updatedAt: FieldValue.serverTimestamp(),
+        failureReason: null,
+        validationErrors: [],
+      });
+      claimed = true;
+    });
+    const item = await firestoreEditorialStore.get(id);
+    if (claimed) console.info("[editorial] generation claim acquired", { queueId: id });
+    return { claimed, item };
+  },
   async publish(queueId, post) {
     const db = getFirestore();
     const queueReference = db.collection("editorial_queue").doc(queueId);
@@ -472,6 +501,7 @@ const editorialService = new EditorialService(
     generateArticle(sourceText(story), story.domain, feedback),
   configuredDomains(),
   2,
+  false,
 );
 
 function secureTokenMatches(actual: string, expected: string) {
@@ -497,6 +527,16 @@ function requireIngestionSecret(req: Request, res: Response, next: () => void) {
   ingestBuckets.set(key, current && current.resetAt > now
     ? { ...current, count: current.count + 1 }
     : { count: 1, resetAt: now + 60_000 });
+  next();
+}
+
+function requireEditorialWorker(req: Request, res: Response, next: () => void) {
+  const configured = process.env.CRON_SECRET || process.env.EDITORIAL_WORKER_SECRET || "";
+  if (!configured) return void res.status(503).json({ error: "worker_not_configured" });
+  const token = bearer(req);
+  if (!token || !secureTokenMatches(token, configured)) {
+    return void res.status(401).json({ error: "invalid_worker_token" });
+  }
   next();
 }
 
@@ -607,6 +647,29 @@ app.post("/api/editorial-ingest", requireIngestionSecret, async (req, res) => {
   const single = !Array.isArray(req.body?.stories);
   const failed = results.every((result) => result.ok === false);
   return res.status(single && failed ? 400 : 201).json(single ? results[0] : { results });
+});
+
+app.get("/api/editorial-worker", requireEditorialWorker, async (_req, res) => {
+  try {
+    const candidates = (await firestoreEditorialStore.listRecent(100))
+      .filter((item) => {
+        if (item.duplicate) return false;
+        if (item.status === "discovered") return true;
+        if (item.status !== "processing") return false;
+        const started = item.processingStartedAt || item.updatedAt;
+        const timestamp = started ? Date.parse(String(started)) : 0;
+        return !timestamp || Date.now() - timestamp >= editorialProcessingStaleAfterMs;
+      })
+      .slice(0, 1);
+    if (!candidates.length) return res.json({ ok: true, processed: 0, message: "No pending editorial items." });
+    const item = candidates[0];
+    const result = await editorialService.process(item.id, item.source);
+    return res.json({ ok: true, processed: 1, queueId: item.id, status: result.status });
+  } catch (error) {
+    const category = classifyEditorialFailure(error);
+    console.error("[editorial-worker] failed", { category, error });
+    return res.status(500).json({ ok: false, error: category, message: safeEditorialFailureMessage(category) });
+  }
 });
 
 // REST/OpenAPI adapter for ChatGPT Actions and other server-to-server tools.
