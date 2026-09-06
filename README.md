@@ -60,3 +60,10 @@ article. NVIDIA remains the fallback through `NVIDIA_API_KEY`,
 out, is unavailable, rate-limited, returns invalid JSON, or fails schema
 validation. Configure `GEMINI_MODEL` only when you need to override the stable
 `gemini-2.5-flash` default. Never expose provider keys through `VITE_*`.
+
+Queue processing does not depend on the scheduled GitHub cron. Configure the
+server-only `GITHUB_ACTIONS_TOKEN` with fine-grained **Actions: write** access
+to `manasvignesh/Cie-Daily-Studio`. The backend dispatches
+`editorial-worker.yml` after ingest, Regenerate, and Process anyway actions;
+the browser never receives this token. The five-minute cron remains only as
+disaster recovery.

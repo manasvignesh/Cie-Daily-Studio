@@ -38,6 +38,7 @@ import {
   submitEditorialStories,
   submitEditorialStoryTool,
 } from "./src/lib/editorial-tool.ts";
+import { dispatchEditorialWorker } from "./src/lib/github-worker-trigger.ts";
 
 const projectId =
   process.env.FIREBASE_PROJECT_ID ||
@@ -603,6 +604,25 @@ const editorialService = new EditorialService(
   (story) => resolveArticleImage(story),
 );
 
+function triggerEditorialWorker(queueId: string | undefined, operation: string) {
+  void dispatchEditorialWorker({
+    token: process.env.GITHUB_ACTIONS_TOKEN,
+    owner: process.env.GITHUB_REPOSITORY_OWNER || "manasvignesh",
+    repo: process.env.GITHUB_REPOSITORY_NAME || "Cie-Daily-Studio",
+  }).then((result) => {
+    if (result.dispatched) {
+      console.info("[editorial] worker dispatched", { queueId: queueId || null, operation });
+    } else {
+      console.warn("[editorial] worker dispatch unavailable", {
+        queueId: queueId || null,
+        operation,
+        reason: result.reason,
+        status: result.status,
+      });
+    }
+  });
+}
+
 function secureTokenMatches(actual: string, expected: string) {
   const left = Buffer.from(actual);
   const right = Buffer.from(expected);
@@ -743,6 +763,10 @@ app.post("/api/editorial-ingest", requireIngestionSecret, async (req, res) => {
       });
     }
   }
+  const queuedIds = results
+    .filter((result) => result.ok === true && result.status === "discovered")
+    .map((result) => String(result.id));
+  if (queuedIds.length) triggerEditorialWorker(queuedIds[0], "ingest");
   const single = !Array.isArray(req.body?.stories);
   const failed = results.every((result) => result.ok === false);
   return res.status(single && failed ? 400 : 201).json(single ? results[0] : { results });
@@ -887,7 +911,10 @@ app.patch("/api/editorial/:id", requireAuth, requireStaff, async (req, res) => {
 
 app.post("/api/editorial/:id/regenerate", requireAuth, requireStaff, async (req, res) => {
   try {
-    return res.json({ item: await editorialService.regenerate(String(req.params.id)) });
+    const queueId = String(req.params.id);
+    const item = await editorialService.regenerate(queueId);
+    triggerEditorialWorker(queueId, "regenerate");
+    return res.json({ item });
   } catch (error) {
     return editorialFailure(res, error);
   }
@@ -895,7 +922,10 @@ app.post("/api/editorial/:id/regenerate", requireAuth, requireStaff, async (req,
 
 app.post("/api/editorial/:id/clear-duplicate", requireAuth, requireStaff, async (req, res) => {
   try {
-    return res.json({ item: await editorialService.clearDuplicate(String(req.params.id)) });
+    const queueId = String(req.params.id);
+    const item = await editorialService.clearDuplicate(queueId);
+    triggerEditorialWorker(queueId, "clear_duplicate");
+    return res.json({ item });
   } catch (error) {
     return editorialFailure(res, error);
   }

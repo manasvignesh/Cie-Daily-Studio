@@ -32,6 +32,10 @@ AI_BASE_URL=https://integrate.api.nvidia.com/v1
 AI_MODEL=meta/muse-glimmer-30b
 GEMINI_MODEL=gemini-2.5-flash
 EDITORIAL_INGEST_SECRET=<a long random secret>
+# Fine-grained token with Actions: write on this repository; server-only.
+GITHUB_ACTIONS_TOKEN=<server-only GitHub Actions dispatch token>
+GITHUB_REPOSITORY_OWNER=manasvignesh
+GITHUB_REPOSITORY_NAME=Cie-Daily-Studio
 CRON_SECRET=<optional; only needed if you later move the worker to Vercel Cron>
 EDITORIAL_DOMAINS=Technology,Startups,AI & ML,Science,Engineering,India,Business
 FIREBASE_PROJECT_ID=cie-connect
@@ -54,6 +58,11 @@ timeout while still draining up to three stories per workflow run. The workflow 
 triggers automatically after a successful editorial-ingest workflow. It retries stale
 processing items after five minutes, and always records `failed` on timeout or
 provider failure.
+In addition, the server dispatches that same workflow immediately after a
+successful ingest, Regenerate, or Not a duplicate / Process anyway action. The
+dispatch token is held only by Vercel; it is never sent to the Studio browser.
+If dispatch is unavailable, the item remains `discovered` and the server logs a
+safe status-only diagnostic; the recovery cron remains available.
 The AI chain has a 48-second deadline with a 10-second Firestore/response
 reserve. Gemini receives up to 38 seconds; NVIDIA is attempted only when the
 remaining budget is sufficient. A deadline failure is persisted as retryable
