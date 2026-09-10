@@ -91,7 +91,7 @@ async function synthesizeSpeech(text: string, targetLang: string, speaker: strin
         loudness: 1.5,
         speech_sample_rate: 24000,
         enable_preprocessing: true,
-        model: "bulbul:v4"
+        model: "bulbul:v3"
       }),
       signal: controller.signal
     });
