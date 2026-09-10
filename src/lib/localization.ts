@@ -1,5 +1,4 @@
 import { getFirestore } from "firebase-admin/firestore";
-import { getStorage } from "firebase-admin/storage";
 import crypto from "node:crypto";
 import type { Article, LocalizedArticle } from "./types.ts";
 
@@ -116,6 +115,55 @@ function combineWavChunks(buffers: Buffer[]) {
   header.writeUInt32LE(header.length + combinedDataSize - 8, 4);
   header.writeUInt32LE(combinedDataSize, firstData.offset - 4);
   return Buffer.concat([header, ...dataParts]);
+}
+
+async function uploadNarration(
+  articleId: string,
+  languageId: string,
+  audioBuffer: Buffer,
+) {
+  const supabaseUrl = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl.startsWith("https://") || !serviceRoleKey) {
+    throw new Error("Supabase narration storage is not configured");
+  }
+
+  const objectPath = `articles/${encodeURIComponent(articleId)}/${languageId}.wav`;
+  const uploadResponse = await fetch(
+    `${supabaseUrl}/storage/v1/object/article-audio/${objectPath}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${serviceRoleKey}`,
+        apikey: serviceRoleKey,
+        "Content-Type": "audio/wav",
+        "x-upsert": "true",
+      },
+      body: audioBuffer.buffer.slice(
+        audioBuffer.byteOffset,
+        audioBuffer.byteOffset + audioBuffer.byteLength,
+      ) as ArrayBuffer,
+    },
+  );
+  if (!uploadResponse.ok) {
+    console.log(
+      "[STORAGE] safe response error:",
+      safeResponseError(await uploadResponse.text()),
+    );
+    throw new Error(`Supabase Storage upload failed: HTTP ${uploadResponse.status}`);
+  }
+
+  const publicUrl = `${supabaseUrl}/storage/v1/object/public/article-audio/${objectPath}`;
+  const publicResponse = await fetch(publicUrl);
+  console.log(`[STORAGE] public URL status: ${publicResponse.status}`);
+  if (!publicResponse.ok) {
+    throw new Error(`Supabase Storage public URL failed: HTTP ${publicResponse.status}`);
+  }
+  if (!publicResponse.headers.get("content-type")?.startsWith("audio/wav")) {
+    throw new Error("Supabase Storage public URL did not return WAV audio");
+  }
+  await publicResponse.body?.cancel();
+  return { objectPath, publicUrl };
 }
 
 async function translateText(text: string, targetLang: string): Promise<string> {
@@ -376,24 +424,13 @@ export async function processLocalization(articleId: string) {
         const audioBuffer = await synthesizeNarration(script, lang.code, "kavitha");
         console.log(`[TTS] ${lang.label} complete — ${audioBuffer.length} bytes`);
         
-        const bucketName = process.env.VITE_FIREBASE_STORAGE_BUCKET || "cie-connect.firebasestorage.app";
-        const storage = getStorage();
-        const bucket = storage.bucket(bucketName);
-        const fileName = `articles/${articleId}/audio/${lang.id}.wav`;
-        const file = bucket.file(fileName);
-        
-        await file.save(audioBuffer, {
-          metadata: { contentType: "audio/wav" },
-          public: true
-        });
-        
-        const encodedPath = encodeURIComponent(fileName);
-        loc.audioUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodedPath}?alt=media`;
+        const upload = await uploadNarration(articleId, lang.id, audioBuffer);
+        loc.audioUrl = upload.publicUrl;
         
         loc.audioStatus = "ready";
         languages[lang.id] = loc;
         await docRef.update({ languages });
-        console.log(`[STORAGE] ${lang.label} audio uploaded — ${fileName}`);
+        console.log(`[STORAGE] ${lang.label} audio uploaded — ${upload.objectPath}`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[TTS] ${lang.label} FAILED for ${articleId}:`, msg);
@@ -436,17 +473,13 @@ export async function processLocalization(articleId: string) {
       const audioBuffer = await synthesizeNarration(script, "en-IN", "ritu");
       console.log(`[TTS] English complete — ${audioBuffer.length} bytes`);
 
-      const bucketName = process.env.VITE_FIREBASE_STORAGE_BUCKET || "cie-connect.firebasestorage.app";
-      const bucket = getStorage().bucket(bucketName);
-      const fileName = `articles/${articleId}/audio/en.wav`;
-      const file = bucket.file(fileName);
-      await file.save(audioBuffer, { metadata: { contentType: "audio/wav" }, public: true });
-      enLoc.audioUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(fileName)}?alt=media`;
+      const upload = await uploadNarration(articleId, "en", audioBuffer);
+      enLoc.audioUrl = upload.publicUrl;
       
       enLoc.audioStatus = "ready";
       languages["en"] = enLoc;
       await docRef.update({ languages });
-      console.log(`[STORAGE] English audio uploaded — ${fileName}`);
+      console.log(`[STORAGE] English audio uploaded — ${upload.objectPath}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[TTS] English FAILED for ${articleId}:`, msg);
