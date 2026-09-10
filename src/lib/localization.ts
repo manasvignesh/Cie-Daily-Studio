@@ -13,57 +13,106 @@ async function translateText(text: string, targetLang: string): Promise<string> 
   const apiKey = process.env.SARVAM_API_KEY;
   if (!apiKey) throw new Error("SARVAM_API_KEY not configured");
 
-  const response = await fetch("https://api.sarvam.ai/translate", {
-    method: "POST",
-    headers: {
-      "api-subscription-key": apiKey,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      input: text,
-      source_language_code: "en-IN",
-      target_language_code: targetLang,
-      speaker_gender: "Male",
-      mode: "formal",
-      model: "sarvam-translate"
-    })
-  });
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Sarvam translate failed: HTTP ${response.status} — ${err.slice(0, 300)}`);
+  console.log("[SARVAM] translation request starting");
+  console.log("[SARVAM] endpoint: https://api.sarvam.ai/translate");
+  console.log("[SARVAM] source language: en-IN");
+  console.log("[SARVAM] target language:", targetLang);
+  console.log("[SARVAM] model: sarvam-translate");
+  console.log("[SARVAM] input character count:", text.length);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+
+  try {
+    const response = await fetch("https://api.sarvam.ai/translate", {
+      method: "POST",
+      headers: {
+        "api-subscription-key": apiKey,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        input: text,
+        source_language_code: "en-IN",
+        target_language_code: targetLang,
+        speaker_gender: "Male",
+        mode: "formal",
+        model: "sarvam-translate"
+      }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeout);
+    console.log(`[SARVAM] translation HTTP status: ${response.status}`);
+
+    if (!response.ok) {
+      const err = await response.text();
+      console.log(`[SARVAM] translation failed\nstatus: ${response.status}\nresponse: ${err.slice(0, 300)}`);
+      throw new Error(`Sarvam translate failed: HTTP ${response.status}`);
+    }
+
+    console.log("[SARVAM] translation response received");
+    const result = await response.json();
+    return result.translated_text;
+  } catch (error: any) {
+    if (error.name === 'AbortError') {
+      console.log("[SARVAM] translation timed out after 30000ms");
+    }
+    throw error;
   }
-  const result = await response.json();
-  return result.translated_text;
 }
 
 async function synthesizeSpeech(text: string, targetLang: string): Promise<Buffer> {
   const apiKey = process.env.SARVAM_API_KEY;
   if (!apiKey) throw new Error("SARVAM_API_KEY not configured");
 
-  const response = await fetch("https://api.sarvam.ai/text-to-speech", {
-    method: "POST",
-    headers: {
-      "api-subscription-key": apiKey,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      inputs: [text],
-      target_language_code: targetLang,
-      speaker: "meera",
-      pitch: 0,
-      pace: 1.0,
-      loudness: 1.5,
-      speech_sample_rate: 24000,
-      enable_preprocessing: true,
-      model: "bulbul:v1"
-    })
-  });
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Sarvam TTS failed: HTTP ${response.status} — ${err.slice(0, 300)}`);
+  console.log("[SARVAM] TTS request starting");
+  console.log("[SARVAM] endpoint: https://api.sarvam.ai/text-to-speech");
+  console.log("[SARVAM] target language:", targetLang);
+  console.log("[SARVAM] model: bulbul:v1");
+  console.log("[SARVAM] input character count:", text.length);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+
+  try {
+    const response = await fetch("https://api.sarvam.ai/text-to-speech", {
+      method: "POST",
+      headers: {
+        "api-subscription-key": apiKey,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        inputs: [text],
+        target_language_code: targetLang,
+        speaker: "meera",
+        pitch: 0,
+        pace: 1.0,
+        loudness: 1.5,
+        speech_sample_rate: 24000,
+        enable_preprocessing: true,
+        model: "bulbul:v1"
+      }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeout);
+    console.log(`[SARVAM] TTS HTTP status: ${response.status}`);
+
+    if (!response.ok) {
+      const err = await response.text();
+      console.log(`[SARVAM] TTS failed\nstatus: ${response.status}\nresponse: ${err.slice(0, 300)}`);
+      throw new Error(`Sarvam TTS failed: HTTP ${response.status}`);
+    }
+
+    console.log("[SARVAM] TTS response received");
+    const result = await response.json();
+    return Buffer.from(result.audios[0], "base64");
+  } catch (error: any) {
+    if (error.name === 'AbortError') {
+      console.log("[SARVAM] TTS timed out after 30000ms");
+    }
+    throw error;
   }
-  const result = await response.json();
-  return Buffer.from(result.audios[0], "base64");
 }
 
 export async function processLocalization(articleId: string) {
@@ -87,9 +136,9 @@ export async function processLocalization(articleId: string) {
   const currentHash = hashArticle(article);
   const languages: Record<string, LocalizedArticle> = article.languages || {};
 
+  // For now, process only Telugu as requested to verify it works
   const targetLangs = [
-    { id: "te", label: "Telugu", code: "te-IN" },
-    { id: "hi", label: "Hindi", code: "hi-IN" }
+    { id: "te", label: "Telugu", code: "te-IN" }
   ];
 
   for (const lang of targetLangs) {
@@ -176,9 +225,10 @@ export async function processLocalization(articleId: string) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[LOCALIZATION] ${lang.label} translation FAILED for ${articleId}:`, msg);
         loc.translationStatus = "failed";
+        loc.audioStatus = "failed"; // Skip audio if translation fails
         languages[lang.id] = loc;
         await docRef.update({ languages });
-        continue; // Skip audio if translation fails
+        continue;
       }
     }
 

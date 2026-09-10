@@ -1208,8 +1208,13 @@ app.delete("/api/streams/:id", requireAuth, requireStaff, async (req: AuthedRequ
 app.post("/api/posts/:id/localize", requireAuth, requireStaff, async (req: AuthedRequest, res) => {
   const postId = String(req.params.id);
   console.log(`[LOCALIZATION] triggered for post ${postId}`);
-  res.json({ ok: true, status: "processing" });
-  processLocalization(postId).catch(err => console.error("[LOCALIZATION] failed", { postId, error: err instanceof Error ? err.message : err }));
+  try {
+    await processLocalization(postId);
+    res.json({ ok: true, status: "completed" });
+  } catch (err: any) {
+    console.error("[LOCALIZATION] failed", { postId, error: err.message });
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // Keep API failures machine-readable. Without this guard, the SPA fallback can
@@ -1228,13 +1233,6 @@ app.use("/api", (error: unknown, req: Request, res: Response, next: (error?: unk
     message: "The requested service is temporarily unavailable.",
   });
 });
-
-app.use("/api", (req, res) =>
-  res.status(404).json({
-    error: "api_route_not_found",
-    detail: `${req.method} ${req.originalUrl}`,
-  }),
-);
 
 app.get("/api/test/sarvam", async (req, res) => {
   try {
@@ -1266,6 +1264,13 @@ app.get("/api/test/sarvam", async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+
+app.use("/api", (req, res) =>
+  res.status(404).json({
+    error: "api_route_not_found",
+    detail: `${req.method} ${req.originalUrl}`,
+  }),
+);
 
 const port = Number(process.env.STUDIO_PORT || 3100);
 export default app;
