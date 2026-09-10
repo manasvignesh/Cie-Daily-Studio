@@ -250,7 +250,7 @@ export async function processLocalization(articleId: string) {
           ...loc.full_article.explore_sections.map(s => s.title + ". " + s.content)
         ].join(" ");
 
-        const audioBuffer = await synthesizeSpeech(script, lang.code, "kavitha_telugu_narration");
+        const audioBuffer = await synthesizeSpeech(script, lang.code, "kavitha");
         console.log(`[TTS] ${lang.label} complete — ${audioBuffer.length} bytes`);
         
         const bucketName = process.env.VITE_FIREBASE_STORAGE_BUCKET || "cie-connect.firebasestorage.app";
@@ -309,7 +309,7 @@ export async function processLocalization(articleId: string) {
         ...(article.full_article.explore_sections || []).map(s => s.title + ". " + s.content)
       ].join(" ");
 
-      const audioBuffer = await synthesizeSpeech(script, "en-IN", "ritu_english_stories");
+      const audioBuffer = await synthesizeSpeech(script, "en-IN", "ritu");
       console.log(`[TTS] English complete — ${audioBuffer.length} bytes`);
 
       const bucketName = process.env.VITE_FIREBASE_STORAGE_BUCKET || "cie-connect.firebasestorage.app";

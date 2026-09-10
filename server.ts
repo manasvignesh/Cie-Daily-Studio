@@ -1253,7 +1253,7 @@ app.get("/api/test/sarvam", async (req, res) => {
     const ttsRes = await fetch("https://api.sarvam.ai/text-to-speech", {
       method: "POST",
       headers: { "api-subscription-key": apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({ inputs: ["Hello"], target_language_code: "te-IN", speaker: "kavitha_telugu_narration", pitch: 0, pace: 1.0, loudness: 1.5, speech_sample_rate: 24000, enable_preprocessing: true, model: "bulbul:v3" })
+      body: JSON.stringify({ inputs: ["Hello"], target_language_code: "te-IN", speaker: "kavitha", pitch: 0, pace: 1.0, loudness: 1.5, speech_sample_rate: 24000, enable_preprocessing: true, model: "bulbul:v3" })
     });
 
     const ttsStatus = ttsRes.status;
