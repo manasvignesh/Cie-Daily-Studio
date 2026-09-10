@@ -17,7 +17,7 @@ async function translateText(text: string, targetLang: string): Promise<string> 
   console.log("[SARVAM] endpoint: https://api.sarvam.ai/translate");
   console.log("[SARVAM] source language: en-IN");
   console.log("[SARVAM] target language:", targetLang);
-  console.log("[SARVAM] model: sarvam-translate");
+  console.log("[SARVAM] model: sarvam-translate:v1");
   console.log("[SARVAM] input character count:", text.length);
 
   const controller = new AbortController();
@@ -36,7 +36,7 @@ async function translateText(text: string, targetLang: string): Promise<string> 
         target_language_code: targetLang,
         speaker_gender: "Male",
         mode: "formal",
-        model: "sarvam-translate"
+        model: "sarvam-translate:v1"
       }),
       signal: controller.signal
     });
@@ -61,14 +61,15 @@ async function translateText(text: string, targetLang: string): Promise<string> 
   }
 }
 
-async function synthesizeSpeech(text: string, targetLang: string): Promise<Buffer> {
+async function synthesizeSpeech(text: string, targetLang: string, speaker: string): Promise<Buffer> {
   const apiKey = process.env.SARVAM_API_KEY;
   if (!apiKey) throw new Error("SARVAM_API_KEY not configured");
 
   console.log("[SARVAM] TTS request starting");
   console.log("[SARVAM] endpoint: https://api.sarvam.ai/text-to-speech");
   console.log("[SARVAM] target language:", targetLang);
-  console.log("[SARVAM] model: bulbul:v1");
+  console.log("[SARVAM] speaker:", speaker);
+  console.log("[SARVAM] model: bulbul:v4");
   console.log("[SARVAM] input character count:", text.length);
 
   const controller = new AbortController();
@@ -84,13 +85,13 @@ async function synthesizeSpeech(text: string, targetLang: string): Promise<Buffe
       body: JSON.stringify({
         inputs: [text],
         target_language_code: targetLang,
-        speaker: "meera",
+        speaker: speaker,
         pitch: 0,
         pace: 1.0,
         loudness: 1.5,
         speech_sample_rate: 24000,
         enable_preprocessing: true,
-        model: "bulbul:v1"
+        model: "bulbul:v4"
       }),
       signal: controller.signal
     });
@@ -249,7 +250,7 @@ export async function processLocalization(articleId: string) {
           ...loc.full_article.explore_sections.map(s => s.title + ". " + s.content)
         ].join(" ");
 
-        const audioBuffer = await synthesizeSpeech(script, lang.code);
+        const audioBuffer = await synthesizeSpeech(script, lang.code, "kavitha_telugu_narration");
         console.log(`[TTS] ${lang.label} complete — ${audioBuffer.length} bytes`);
         
         const bucketName = process.env.VITE_FIREBASE_STORAGE_BUCKET || "cie-connect.firebasestorage.app";
@@ -308,7 +309,7 @@ export async function processLocalization(articleId: string) {
         ...(article.full_article.explore_sections || []).map(s => s.title + ". " + s.content)
       ].join(" ");
 
-      const audioBuffer = await synthesizeSpeech(script, "en-IN");
+      const audioBuffer = await synthesizeSpeech(script, "en-IN", "ritu_english_stories");
       console.log(`[TTS] English complete — ${audioBuffer.length} bytes`);
 
       const bucketName = process.env.VITE_FIREBASE_STORAGE_BUCKET || "cie-connect.firebasestorage.app";
