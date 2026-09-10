@@ -1236,6 +1236,37 @@ app.use("/api", (req, res) =>
   }),
 );
 
+app.get("/api/test/sarvam", async (req, res) => {
+  try {
+    const apiKey = process.env.SARVAM_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: "No API key" });
+    
+    // Translation Test
+    const trRes = await fetch("https://api.sarvam.ai/translate", {
+      method: "POST",
+      headers: { "api-subscription-key": apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ input: "Hello", source_language_code: "en-IN", target_language_code: "te-IN", speaker_gender: "Male", mode: "formal", model: "sarvam-translate" })
+    });
+    
+    const trStatus = trRes.status;
+    const trText = trRes.ok ? (await trRes.json()).translated_text : await trRes.text();
+
+    // TTS Test
+    const ttsRes = await fetch("https://api.sarvam.ai/text-to-speech", {
+      method: "POST",
+      headers: { "api-subscription-key": apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ inputs: ["Hello"], target_language_code: "te-IN", speaker: "meera", pitch: 0, pace: 1.0, loudness: 1.5, speech_sample_rate: 24000, enable_preprocessing: true, model: "bulbul:v1" })
+    });
+
+    const ttsStatus = ttsRes.status;
+    const ttsResponse = ttsRes.ok ? "Success (audio generated)" : await ttsRes.text();
+
+    return res.json({ translation: { status: trStatus, result: trText }, tts: { status: ttsStatus, result: ttsResponse } });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 const port = Number(process.env.STUDIO_PORT || 3100);
 export default app;
 
