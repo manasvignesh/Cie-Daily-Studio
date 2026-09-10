@@ -3,9 +3,119 @@ import { getStorage } from "firebase-admin/storage";
 import crypto from "node:crypto";
 import type { Article, LocalizedArticle } from "./types.ts";
 
+const sarvamTtsModel = "bulbul:v3";
+const sarvamTtsLimit = 2500;
+const sarvamTtsChunkTarget = 2300;
+
 function hashArticle(article: Article) {
   const content = JSON.stringify(article.quick_brief) + JSON.stringify(article.full_article);
   return crypto.createHash("md5").update(content).digest("hex");
+}
+
+function safeResponseError(value: string) {
+  return value
+    .replace(/api[-_ ]?(subscription[-_ ]?)?key["':=\s]+[A-Za-z0-9._-]+/gi, "api key [redacted]")
+    .replace(/bearer\s+[A-Za-z0-9._-]+/gi, "bearer [redacted]")
+    .slice(0, 300);
+}
+
+function narrationText(parts: Array<string | undefined | null>) {
+  return parts
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function splitLongText(text: string, maxChars: number) {
+  const chunks: string[] = [];
+  const sentences = text
+    .split(/(?<=[.!?।॥])\s+/u)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  let current = "";
+
+  const pushCurrent = () => {
+    if (current.trim()) chunks.push(current.trim());
+    current = "";
+  };
+
+  for (const sentence of sentences.length ? sentences : [text]) {
+    if (sentence.length > maxChars) {
+      pushCurrent();
+      for (let index = 0; index < sentence.length; index += maxChars) {
+        chunks.push(sentence.slice(index, index + maxChars).trim());
+      }
+      continue;
+    }
+    const next = current ? `${current} ${sentence}` : sentence;
+    if (next.length > maxChars) {
+      pushCurrent();
+      current = sentence;
+    } else {
+      current = next;
+    }
+  }
+  pushCurrent();
+  return chunks;
+}
+
+function chunkNarration(text: string, maxChars = sarvamTtsChunkTarget) {
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const paragraph of text.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean)) {
+    if (paragraph.length > maxChars) {
+      if (current) {
+        chunks.push(current);
+        current = "";
+      }
+      chunks.push(...splitLongText(paragraph, maxChars));
+      continue;
+    }
+    const next = current ? `${current}\n\n${paragraph}` : paragraph;
+    if (next.length > maxChars) {
+      chunks.push(current);
+      current = paragraph;
+    } else {
+      current = next;
+    }
+  }
+
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function wavData(buffer: Buffer) {
+  if (buffer.toString("ascii", 0, 4) !== "RIFF" || buffer.toString("ascii", 8, 12) !== "WAVE") {
+    throw new Error("Sarvam TTS returned non-WAV audio");
+  }
+  let offset = 12;
+  while (offset + 8 <= buffer.length) {
+    const id = buffer.toString("ascii", offset, offset + 4);
+    const size = buffer.readUInt32LE(offset + 4);
+    if (id === "data") return { offset: offset + 8, size };
+    offset += 8 + size + (size % 2);
+  }
+  throw new Error("Sarvam TTS WAV missing data chunk");
+}
+
+function combineWavChunks(buffers: Buffer[]) {
+  if (buffers.length === 0) throw new Error("No TTS audio chunks generated");
+  if (buffers.length === 1) return buffers[0];
+
+  const first = Buffer.from(buffers[0]);
+  const dataParts = buffers.map((buffer) => {
+    const data = wavData(buffer);
+    return buffer.subarray(data.offset, data.offset + data.size);
+  });
+  const combinedDataSize = dataParts.reduce((total, part) => total + part.length, 0);
+  const firstData = wavData(first);
+  const header = Buffer.from(first.subarray(0, firstData.offset));
+  header.writeUInt32LE(header.length + combinedDataSize - 8, 4);
+  header.writeUInt32LE(combinedDataSize, firstData.offset - 4);
+  return Buffer.concat([header, ...dataParts]);
 }
 
 async function translateText(text: string, targetLang: string): Promise<string> {
@@ -65,12 +175,14 @@ async function synthesizeSpeech(text: string, targetLang: string, speaker: strin
   const apiKey = process.env.SARVAM_API_KEY;
   if (!apiKey) throw new Error("SARVAM_API_KEY not configured");
 
-  console.log("[SARVAM] TTS request starting");
-  console.log("[SARVAM] endpoint: https://api.sarvam.ai/text-to-speech");
-  console.log("[SARVAM] target language:", targetLang);
-  console.log("[SARVAM] speaker:", speaker);
-  console.log("[SARVAM] model: bulbul:v4");
-  console.log("[SARVAM] input character count:", text.length);
+  console.log("[TTS] language:", targetLang);
+  console.log("[TTS] model:", sarvamTtsModel);
+  console.log("[TTS] speaker:", speaker);
+  console.log("[TTS] input character count:", text.length);
+
+  if (text.length > sarvamTtsLimit) {
+    throw new Error(`TTS input exceeds Sarvam REST limit: ${text.length}/${sarvamTtsLimit}`);
+  }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30000);
@@ -83,37 +195,47 @@ async function synthesizeSpeech(text: string, targetLang: string, speaker: strin
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        inputs: [text],
-        target_language_code: targetLang,
+        text,
+        language_code: targetLang,
         speaker: speaker,
-        pitch: 0,
         pace: 1.0,
-        loudness: 1.5,
         speech_sample_rate: 24000,
-        enable_preprocessing: true,
-        model: "bulbul:v3"
+        output_audio_codec: "wav",
+        model: sarvamTtsModel
       }),
       signal: controller.signal
     });
 
     clearTimeout(timeout);
-    console.log(`[SARVAM] TTS HTTP status: ${response.status}`);
+    console.log(`[TTS] HTTP status: ${response.status}`);
 
     if (!response.ok) {
       const err = await response.text();
-      console.log(`[SARVAM] TTS failed\nstatus: ${response.status}\nresponse: ${err.slice(0, 300)}`);
+      console.log("[TTS] safe response error:", safeResponseError(err));
       throw new Error(`Sarvam TTS failed: HTTP ${response.status}`);
     }
 
-    console.log("[SARVAM] TTS response received");
     const result = await response.json();
-    return Buffer.from(result.audios[0], "base64");
+    const audio = result.audios?.[0];
+    if (typeof audio !== "string" || !audio) throw new Error("Sarvam TTS returned no audio");
+    return Buffer.from(audio, "base64");
   } catch (error: any) {
     if (error.name === 'AbortError') {
-      console.log("[SARVAM] TTS timed out after 30000ms");
+      console.log("[TTS] safe response error:", "request timed out after 30000ms");
     }
     throw error;
   }
+}
+
+async function synthesizeNarration(text: string, targetLang: string, speaker: string): Promise<Buffer> {
+  const chunks = chunkNarration(text);
+  console.log(`[TTS] chunk count: ${chunks.length}`);
+  const buffers: Buffer[] = [];
+  for (let index = 0; index < chunks.length; index += 1) {
+    console.log(`[TTS] chunk ${index + 1}/${chunks.length}`);
+    buffers.push(await synthesizeSpeech(chunks[index], targetLang, speaker));
+  }
+  return combineWavChunks(buffers);
 }
 
 export async function processLocalization(articleId: string) {
@@ -240,7 +362,7 @@ export async function processLocalization(articleId: string) {
       await docRef.update({ languages });
 
       try {
-        const script = [
+        const script = narrationText([
           loc.quick_brief.headline,
           loc.quick_brief.quick_summary,
           "What happened.",
@@ -248,9 +370,10 @@ export async function processLocalization(articleId: string) {
           "Why this matters.",
           loc.full_article.why_this_matters,
           ...loc.full_article.explore_sections.map(s => s.title + ". " + s.content)
-        ].join(" ");
+        ]);
 
-        const audioBuffer = await synthesizeSpeech(script, lang.code, "kavitha");
+        await synthesizeSpeech("ఇది తెలుగు వాయిస్ పరీక్ష.", lang.code, "kavitha");
+        const audioBuffer = await synthesizeNarration(script, lang.code, "kavitha");
         console.log(`[TTS] ${lang.label} complete — ${audioBuffer.length} bytes`);
         
         const bucketName = process.env.VITE_FIREBASE_STORAGE_BUCKET || "cie-connect.firebasestorage.app";
@@ -299,7 +422,7 @@ export async function processLocalization(articleId: string) {
     await docRef.update({ languages });
     
     try {
-      const script = [
+      const script = narrationText([
         article.quick_brief.headline,
         article.quick_brief.quick_summary,
         "What happened.",
@@ -307,9 +430,10 @@ export async function processLocalization(articleId: string) {
         "Why this matters.",
         article.full_article.why_this_matters,
         ...(article.full_article.explore_sections || []).map(s => s.title + ". " + s.content)
-      ].join(" ");
+      ]);
 
-      const audioBuffer = await synthesizeSpeech(script, "en-IN", "ritu");
+      await synthesizeSpeech("This is an English voice test.", "en-IN", "ritu");
+      const audioBuffer = await synthesizeNarration(script, "en-IN", "ritu");
       console.log(`[TTS] English complete — ${audioBuffer.length} bytes`);
 
       const bucketName = process.env.VITE_FIREBASE_STORAGE_BUCKET || "cie-connect.firebasestorage.app";
