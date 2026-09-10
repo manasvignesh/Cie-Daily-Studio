@@ -39,6 +39,7 @@ import {
   submitEditorialStoryTool,
 } from "./src/lib/editorial-tool.ts";
 import { dispatchEditorialWorker } from "./src/lib/github-worker-trigger.ts";
+import { processLocalization } from "./src/lib/localization.ts";
 
 const projectId =
   process.env.FIREBASE_PROJECT_ID ||
@@ -212,6 +213,9 @@ app.get("/api/health", async (_req, res) => {
         process.env.LIVEKIT_API_SECRET &&
         (process.env.LIVEKIT_URL || process.env.VITE_LIVEKIT_URL)
       ),
+    },
+    sarvam: {
+      configured: !!process.env.SARVAM_API_KEY,
     },
   });
 });
@@ -948,6 +952,7 @@ app.post("/api/editorial/:id/publish", requireAuth, requireStaff, async (req: Au
       name: user.name || user.email?.split("@")[0] || "Editor",
       email: user.email || "",
     });
+    processLocalization(item.publishedArticleId!).catch(err => console.error("[LOCALIZATION] editorial publish localization failed", err));
     return res.json({ item });
   } catch (error) {
     console.warn("[editorial] publish failed", { queueId: String(req.params.id) });
@@ -1198,6 +1203,13 @@ app.delete("/api/streams/:id", requireAuth, requireStaff, async (req: AuthedRequ
   } catch (error: any) {
     return res.status(500).json({ error: "stream_deletion_failed", detail: error?.message });
   }
+});
+
+app.post("/api/posts/:id/localize", requireAuth, requireStaff, async (req: AuthedRequest, res) => {
+  const postId = String(req.params.id);
+  console.log(`[LOCALIZATION] triggered for post ${postId}`);
+  res.json({ ok: true, status: "processing" });
+  processLocalization(postId).catch(err => console.error("[LOCALIZATION] failed", { postId, error: err instanceof Error ? err.message : err }));
 });
 
 // Keep API failures machine-readable. Without this guard, the SPA fallback can

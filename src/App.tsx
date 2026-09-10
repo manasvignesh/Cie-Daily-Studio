@@ -1146,14 +1146,22 @@ function ArticleEditor() {
         ...(status === "approved" ? { publishedAt: serverTimestamp() } : {}),
       };
     try {
+      let postId = id;
       if (id) await updateDoc(doc(db, "posts", id), payload as any);
       else {
         const d = await addDoc(collection(db, "posts"), payload);
+        postId = d.id;
         navg(`/articles/${d.id}`, { replace: true });
+      }
+      if (status === "approved" && postId) {
+        await fetch(`/api/posts/${postId}/localize`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${await auth.currentUser!.getIdToken()}` }
+        }).catch(err => console.warn("Localization trigger failed", err));
       }
       setMessage(
         status === "approved"
-          ? "Published to the shared Firestore ecosystem."
+          ? "Published to the shared Firestore ecosystem. Localization is generating in the background."
           : "Draft saved.",
       );
     } catch (e: any) {
@@ -1204,6 +1212,42 @@ function ArticleEditor() {
         ))}
       </div>
       {message && <div className="notice">{message}</div>}
+      {article.id && article.status === "approved" && (
+        <section className="panel" style={{ padding: "16px 24px", marginBottom: 24 }}>
+          <p className="eyebrow" style={{ marginTop: 0, marginBottom: 8 }}>LOCALIZATION & AUDIO</p>
+          <div style={{ display: "flex", gap: 32, fontSize: 14 }}>
+            {["en", "te", "hi"].map(lang => {
+              const loc = article.languages?.[lang];
+              const label = lang === "en" ? "English" : lang === "te" ? "Telugu" : "Hindi";
+              if (!loc) return <div key={lang}><b>{label}</b>: ○ Pending</div>;
+              const ready = loc.translationStatus === "ready" && loc.audioStatus === "ready";
+              const failed = loc.translationStatus === "failed" || loc.audioStatus === "failed";
+              return (
+                <div key={lang} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <b>{label}</b>
+                  {ready ? <span style={{ color: "var(--success)" }}>✓ Ready</span> : failed ? <span style={{ color: "var(--danger)" }}>⚠️ Failed</span> : <span>○ Generating</span>}
+                  {failed && (
+                    <button onClick={async () => {
+                      try {
+                        setMessage("Retrying localization...");
+                        await fetch(`/api/posts/${article.id}/localize`, {
+                          method: "POST",
+                          headers: { Authorization: `Bearer ${await auth.currentUser!.getIdToken()}` }
+                        });
+                        setMessage("Localization retry started.");
+                      } catch (e: any) {
+                        setMessage("Retry failed: " + e.message);
+                      }
+                    }} style={{ padding: "4px 8px", fontSize: 12 }}>
+                      Retry
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
       <section className="coverEditor panel">
         <div className="coverPreview">
           {article.imageUrl ? (
