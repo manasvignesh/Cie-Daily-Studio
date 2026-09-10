@@ -952,7 +952,6 @@ app.post("/api/editorial/:id/publish", requireAuth, requireStaff, async (req: Au
       name: user.name || user.email?.split("@")[0] || "Editor",
       email: user.email || "",
     });
-    processLocalization(item.publishedArticleId!).catch(err => console.error("[LOCALIZATION] editorial publish localization failed", err));
     return res.json({ item });
   } catch (error) {
     console.warn("[editorial] publish failed", { queueId: String(req.params.id) });

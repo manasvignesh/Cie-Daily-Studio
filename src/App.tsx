@@ -637,7 +637,10 @@ function EditorialInbox() {
     setBusyId(item.id);
     setError("");
     try {
-      await editorialRequest(`/api/editorial/${item.id}/${operation}`, { method: "POST" });
+      const result = await editorialRequest(`/api/editorial/${item.id}/${operation}`, { method: "POST" });
+      if (operation === "publish" && result?.item?.publishedArticleId) {
+        await editorialRequest(`/api/posts/${result.item.publishedArticleId}/localize`, { method: "POST" });
+      }
       setSelected(null);
       await load();
     } catch (caught: any) {
