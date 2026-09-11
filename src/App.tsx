@@ -89,6 +89,7 @@ import {
   toPublishedPost,
   validateArticle,
 } from "./lib/article-contract";
+import { SUPPORTED_LANGUAGES } from "./lib/languages";
 import type { Article, LiveStream, StudioUser } from "./lib/types";
 import type { EditorialQueueItem } from "./lib/editorial-automation";
 
@@ -1023,6 +1024,169 @@ function FeaturedManager({ articles }: { articles: Article[] }) {
   );
 }
 
+function LocalizationStatusPanel({
+  article,
+  setMessage,
+}: {
+  article: Article;
+  setMessage: (msg: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [retrying, setRetrying] = useState<string | null>(null);
+
+  const stats = useMemo(() => {
+    let ready = 0;
+    let failed = 0;
+    let processing = 0;
+    let pending = 0;
+
+    for (const lang of SUPPORTED_LANGUAGES) {
+      const loc = article.languages?.[lang.id];
+      if (!loc) {
+        pending++;
+      } else if (loc.translationStatus === "failed" || loc.audioStatus === "failed") {
+        failed++;
+      } else if (loc.translationStatus === "processing" || loc.audioStatus === "processing") {
+        processing++;
+      } else if (loc.translationStatus === "ready" && (loc.audioStatus === "ready" || !lang.tts)) {
+        ready++;
+      } else {
+        pending++;
+      }
+    }
+
+    return { ready, failed, processing, pending, total: SUPPORTED_LANGUAGES.length };
+  }, [article.languages]);
+
+  const handleLocalize = async (langId?: string) => {
+    try {
+      setRetrying(langId || "all");
+      setMessage(langId ? `Retrying ${langId.toUpperCase()} localization...` : "Triggering full localization pipeline...");
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch(`/api/posts/${article.id}/localize`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(langId ? { language: langId } : {}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Localization request failed");
+      setMessage(langId ? `${langId.toUpperCase()} localization queued.` : "Localization pipeline triggered.");
+    } catch (err: any) {
+      setMessage("Localization failed: " + err.message);
+    } finally {
+      setRetrying(null);
+    }
+  };
+
+  return (
+    <section className="panel" style={{ padding: "14px 20px", marginBottom: 20 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <p className="eyebrow" style={{ margin: 0 }}>LOCALIZATION & REGIONAL AUDIO</p>
+          <span style={{ fontSize: 13, fontWeight: 600, color: stats.ready === stats.total ? "var(--success)" : "inherit" }}>
+            Languages: {stats.ready}/{stats.total} ready
+          </span>
+          {stats.processing > 0 && (
+            <span style={{ fontSize: 12, color: "var(--accent)", display: "flex", alignItems: "center", gap: 4 }}>
+              <RefreshCw size={12} className="spin" /> {stats.processing} generating
+            </span>
+          )}
+          {stats.failed > 0 && (
+            <span style={{ fontSize: 12, color: "var(--danger)", fontWeight: 500 }}>
+              ⚠️ {stats.failed} failed
+            </span>
+          )}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {(stats.failed > 0 || stats.ready < stats.total) && (
+            <button
+              type="button"
+              disabled={!!retrying}
+              onClick={() => handleLocalize()}
+              style={{ padding: "4px 10px", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}
+            >
+              <RefreshCw size={12} />
+              {retrying === "all" ? "Processing..." : stats.failed > 0 ? "Retry Failed" : "Localize All"}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            style={{ padding: "4px 8px", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}
+          >
+            {expanded ? <>Hide <ChevronUp size={14} /></> : <>Details <ChevronDown size={14} /></>}
+          </button>
+        </div>
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 10 }}>
+          {SUPPORTED_LANGUAGES.map((lang) => {
+            const loc = article.languages?.[lang.id];
+            const isReady = loc?.translationStatus === "ready" && loc?.audioStatus === "ready";
+            const isFailed = loc?.translationStatus === "failed" || loc?.audioStatus === "failed";
+            const isProcessing = loc?.translationStatus === "processing" || loc?.audioStatus === "processing";
+            const isPending = !loc || (loc.translationStatus === "pending" && loc.audioStatus === "pending");
+
+            return (
+              <div
+                key={lang.id}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  background: isReady ? "rgba(16, 185, 129, 0.05)" : isFailed ? "rgba(239, 68, 68, 0.05)" : "var(--bg-card)",
+                  fontSize: 13,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontWeight: 600 }}>{lang.nativeLabel}</span>
+                  <span style={{ fontSize: 11, color: "var(--muted)" }}>{lang.name}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 2 }}>
+                  <span style={{ fontSize: 12 }}>
+                    {isReady && <span style={{ color: "var(--success)" }}>✓ Ready</span>}
+                    {isFailed && <span style={{ color: "var(--danger)" }}>⚠️ Failed</span>}
+                    {isProcessing && <span style={{ color: "var(--accent)" }}>○ Generating</span>}
+                    {isPending && <span style={{ color: "var(--muted)" }}>○ Pending</span>}
+                  </span>
+                  {(isFailed || isPending) && (
+                    <button
+                      type="button"
+                      disabled={retrying === lang.id}
+                      onClick={() => handleLocalize(lang.id)}
+                      style={{ padding: "2px 6px", fontSize: 11 }}
+                    >
+                      {retrying === lang.id ? "..." : "Retry"}
+                    </button>
+                  )}
+                  {isReady && loc?.audioUrl && (
+                    <a
+                      href={loc.audioUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ fontSize: 11, color: "var(--accent)", textDecoration: "none" }}
+                      title="Preview audio"
+                    >
+                      🔊 Audio
+                    </a>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ArticleEditor() {
   const { id } = useParams(),
     navg = useNavigate(),
@@ -1215,41 +1379,8 @@ function ArticleEditor() {
         ))}
       </div>
       {message && <div className="notice">{message}</div>}
-      {article.id && article.status === "approved" && (
-        <section className="panel" style={{ padding: "16px 24px", marginBottom: 24 }}>
-          <p className="eyebrow" style={{ marginTop: 0, marginBottom: 8 }}>LOCALIZATION & AUDIO</p>
-          <div style={{ display: "flex", gap: 32, fontSize: 14 }}>
-            {["en", "te", "hi"].map(lang => {
-              const loc = article.languages?.[lang];
-              const label = lang === "en" ? "English" : lang === "te" ? "Telugu" : "Hindi";
-              if (!loc) return <div key={lang}><b>{label}</b>: ○ Pending</div>;
-              const ready = loc.translationStatus === "ready" && loc.audioStatus === "ready";
-              const failed = loc.translationStatus === "failed" || loc.audioStatus === "failed";
-              return (
-                <div key={lang} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <b>{label}</b>
-                  {ready ? <span style={{ color: "var(--success)" }}>✓ Ready</span> : failed ? <span style={{ color: "var(--danger)" }}>⚠️ Failed</span> : <span>○ Generating</span>}
-                  {failed && (
-                    <button onClick={async () => {
-                      try {
-                        setMessage("Retrying localization...");
-                        await fetch(`/api/posts/${article.id}/localize`, {
-                          method: "POST",
-                          headers: { Authorization: `Bearer ${await auth.currentUser!.getIdToken()}` }
-                        });
-                        setMessage("Localization retry started.");
-                      } catch (e: any) {
-                        setMessage("Retry failed: " + e.message);
-                      }
-                    }} style={{ padding: "4px 8px", fontSize: 12 }}>
-                      Retry
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </section>
+      {article.id && (article.status === "approved" || article.status === "published") && (
+        <LocalizationStatusPanel article={article} setMessage={setMessage} />
       )}
       <section className="coverEditor panel">
         <div className="coverPreview">

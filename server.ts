@@ -1206,9 +1206,15 @@ app.delete("/api/streams/:id", requireAuth, requireStaff, async (req: AuthedRequ
 
 app.post("/api/posts/:id/localize", requireAuth, requireStaff, async (req: AuthedRequest, res) => {
   const postId = String(req.params.id);
-  console.log(`[LOCALIZATION] triggered for post ${postId}`);
+  const targetLanguages = req.body?.language
+    ? [String(req.body.language)]
+    : Array.isArray(req.body?.languages)
+      ? req.body.languages.map(String)
+      : undefined;
+
+  console.log(`[LOCALIZATION] triggered for post ${postId}`, { targetLanguages });
   try {
-    await processLocalization(postId);
+    await processLocalization(postId, targetLanguages);
     res.json({ ok: true, status: "completed" });
   } catch (err: any) {
     console.error("[LOCALIZATION] failed", { postId, error: err.message });
