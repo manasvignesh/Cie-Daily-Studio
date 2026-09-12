@@ -361,7 +361,7 @@ async function localizeLanguage(
       await docRef.update({ [`languages.${lang.id}`]: loc });
 
       try {
-        const translate = (t: string) => translateText(t, lang.code);
+        const translate = (t: string) => translateText(t, lang.sarvamCode);
 
         loc.title = await translate(article.quick_brief.headline);
         loc.quick_brief = JSON.parse(JSON.stringify(article.quick_brief));
@@ -439,7 +439,7 @@ async function localizeLanguage(
   }
 
   // 2. TTS Generation & Upload Step
-  if (lang.tts && loc.translationStatus === "ready") {
+  if (lang.ttsEnabled && loc.translationStatus === "ready") {
     const needsAudio =
       loc.originalHash !== currentHash ||
       loc.audioStatus === "pending" ||
@@ -453,7 +453,7 @@ async function localizeLanguage(
 
       try {
         const script = buildNarrationScript(loc);
-        const audioBuffer = await synthesizeNarration(script, lang.code, lang.speaker);
+        const audioBuffer = await synthesizeNarration(script, lang.sarvamCode, lang.speaker);
         console.log(`[TTS] ${lang.name} (${lang.id}) complete — ${audioBuffer.length} bytes`);
 
         const upload = await uploadNarration(articleId, lang.id, audioBuffer);

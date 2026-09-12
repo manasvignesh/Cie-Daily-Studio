@@ -1,25 +1,25 @@
 export interface LanguageConfig {
   id: string;
-  code: string;
+  sarvamCode: string;
   name: string;
   nativeLabel: string;
   speaker: string;
-  tts: boolean;
+  ttsEnabled: boolean;
   isSource?: boolean;
 }
 
 export const SUPPORTED_LANGUAGES: LanguageConfig[] = [
-  { id: "en", code: "en-IN", name: "English", nativeLabel: "English", speaker: "ritu", tts: true, isSource: true },
-  { id: "hi", code: "hi-IN", name: "Hindi", nativeLabel: "हिन्दी", speaker: "ritu", tts: true },
-  { id: "te", code: "te-IN", name: "Telugu", nativeLabel: "తెలుగు", speaker: "kavitha", tts: true },
-  { id: "ta", code: "ta-IN", name: "Tamil", nativeLabel: "தமிழ்", speaker: "kavitha", tts: true },
-  { id: "kn", code: "kn-IN", name: "Kannada", nativeLabel: "ಕನ್ನಡ", speaker: "kavitha", tts: true },
-  { id: "ml", code: "ml-IN", name: "Malayalam", nativeLabel: "മലയാളം", speaker: "kavitha", tts: true },
-  { id: "bn", code: "bn-IN", name: "Bengali", nativeLabel: "বাংলা", speaker: "kavitha", tts: true },
-  { id: "mr", code: "mr-IN", name: "Marathi", nativeLabel: "मराठी", speaker: "kavitha", tts: true },
-  { id: "gu", code: "gu-IN", name: "Gujarati", nativeLabel: "ગુજરાતી", speaker: "kavitha", tts: true },
-  { id: "pa", code: "pa-IN", name: "Punjabi", nativeLabel: "ਪੰਜਾਬੀ", speaker: "kavitha", tts: true },
-  { id: "od", code: "od-IN", name: "Odia", nativeLabel: "ଓଡ଼ିଆ", speaker: "kavitha", tts: true },
+  { id: "en", sarvamCode: "en-IN", name: "English", nativeLabel: "English", speaker: "ritu", ttsEnabled: true, isSource: true },
+  { id: "hi", sarvamCode: "hi-IN", name: "Hindi", nativeLabel: "हिन्दी", speaker: "priya", ttsEnabled: true },
+  { id: "te", sarvamCode: "te-IN", name: "Telugu", nativeLabel: "తెలుగు", speaker: "priya", ttsEnabled: true },
+  { id: "ta", sarvamCode: "ta-IN", name: "Tamil", nativeLabel: "தமிழ்", speaker: "ishita", ttsEnabled: true },
+  { id: "kn", sarvamCode: "kn-IN", name: "Kannada", nativeLabel: "ಕನ್ನಡ", speaker: "ishita", ttsEnabled: true },
+  { id: "ml", sarvamCode: "ml-IN", name: "Malayalam", nativeLabel: "മലയാളം", speaker: "pooja", ttsEnabled: true },
+  { id: "bn", sarvamCode: "bn-IN", name: "Bengali", nativeLabel: "বাংলা", speaker: "roopa", ttsEnabled: true },
+  { id: "mr", sarvamCode: "mr-IN", name: "Marathi", nativeLabel: "मराठी", speaker: "priya", ttsEnabled: true },
+  { id: "gu", sarvamCode: "gu-IN", name: "Gujarati", nativeLabel: "ગુજરાતી", speaker: "priya", ttsEnabled: true },
+  { id: "pa", sarvamCode: "pa-IN", name: "Punjabi", nativeLabel: "ਪੰਜਾਬੀ", speaker: "roopa", ttsEnabled: true },
+  { id: "od", sarvamCode: "od-IN", name: "Odia", nativeLabel: "ଓଡ଼ିଆ", speaker: "pooja", ttsEnabled: true },
 ];
 
 export const LANGUAGE_MAP = new Map<string, LanguageConfig>(

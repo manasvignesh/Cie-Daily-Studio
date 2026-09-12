@@ -1048,7 +1048,7 @@ function LocalizationStatusPanel({
         failed++;
       } else if (loc.translationStatus === "processing" || loc.audioStatus === "processing") {
         processing++;
-      } else if (loc.translationStatus === "ready" && (loc.audioStatus === "ready" || !lang.tts)) {
+      } else if (loc.translationStatus === "ready" && (loc.audioStatus === "ready" || !lang.ttsEnabled)) {
         ready++;
       } else {
         pending++;
