@@ -81,24 +81,77 @@ function legacyBodyText(article: Article) {
         })
         .filter(Boolean)
     : [];
-  return blockText.length ? blockText.join("\n\n") : String(article.raw_input || "").trim();
+  if (blockText.length) return blockText.join("\n\n");
+  const legacy = article as Article & Record<string, unknown>;
+  return [
+    article.raw_input,
+    legacy.what_happened,
+    legacy.whatHappened,
+    legacy.description,
+    legacy.summary,
+    legacy.hook,
+    legacy.quick_summary,
+    legacy.quickSummary,
+  ].map((value) => String(value || "").trim()).find(Boolean) || "";
 }
 
-function canonicalEnglishArticle(article: Article): Article | null {
+function legacyString(article: Article, ...keys: string[]) {
+  const legacy = article as Article & Record<string, unknown>;
+  for (const key of keys) {
+    const value = String(legacy[key] || "").trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function legacyStrings(article: Article, ...keys: string[]) {
+  const legacy = article as Article & Record<string, unknown>;
+  for (const key of keys) {
+    if (Array.isArray(legacy[key])) {
+      const values = (legacy[key] as unknown[]).map((value) => String(value || "").trim()).filter(Boolean);
+      if (values.length) return values;
+    }
+  }
+  return [];
+}
+
+export function canonicalEnglishArticle(article: Article): Article | null {
   if (hasUsableEnglish(article)) return article;
 
   const body = legacyBodyText(article);
-  const headline = String(article.title || article.quick_brief?.headline || "").trim();
+  const headline = String(article.title || article.quick_brief?.headline ||
+    legacyString(article, "headline")).trim();
   if (!headline || !body) return null;
 
-  const summary = limitWords(firstSentence(body), 60);
+  const summary = legacyString(article, "quick_summary", "quickSummary", "summary", "description") ||
+    limitWords(firstSentence(body), 60);
   const bodyParagraphs = body
     .split(/\n{2,}/)
     .map((part) => part.trim())
     .filter(Boolean);
-  const takeaways = bodyParagraphs.length
+  const takeaways = legacyStrings(article, "takeaways", "you_now_know", "youNowKnow");
+  const derivedTakeaways = bodyParagraphs.length
     ? bodyParagraphs.slice(0, 3).map((part) => limitWords(part, 18))
     : [summary];
+  const finalTakeaways = takeaways.length ? takeaways : derivedTakeaways;
+  const threeThings = legacyStrings(
+    article,
+    "three_things_to_know",
+    "threeThingsToKnow",
+    "threeThings",
+    "facts",
+  );
+  const whatHappened = legacyString(article, "what_happened", "whatHappened") || body;
+  const whyThisMatters = legacyString(
+    article,
+    "why_this_matters",
+    "whyThisMatters",
+    "why_it_matters",
+    "whyItMatters",
+  ) || summary;
+  const hook = legacyString(article, "hook") || summary;
+  const in20Seconds = legacyString(article, "in_20_seconds", "in20Seconds") || summary;
+  const biggerPicture = legacyString(article, "bigger_picture", "biggerPicture");
 
   return {
     ...article,
@@ -108,26 +161,26 @@ function canonicalEnglishArticle(article: Article): Article | null {
       category: article.category || article.articleCategory || "Article",
       headline,
       quick_summary: summary,
-      three_things_to_know: takeaways.slice(0, 3),
+      three_things_to_know: (threeThings.length ? threeThings : finalTakeaways).slice(0, 3),
       key_number: null,
     },
     full_article: {
       headline,
-      hook: summary,
-      in_20_seconds: summary,
-      what_happened: body,
-      why_this_matters: summary,
-      bigger_picture: "",
+      hook,
+      in_20_seconds: in20Seconds,
+      what_happened: whatHappened,
+      why_this_matters: whyThisMatters,
+      bigger_picture: biggerPicture,
       key_stats: [],
       explore_sections: [
         {
           title: "Story",
           summary,
-          content: body,
+          content: whatHappened,
           items: [],
         },
       ],
-      takeaways: takeaways.slice(0, 5),
+      takeaways: finalTakeaways.slice(0, 5),
       quote: null,
     },
   };
