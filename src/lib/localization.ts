@@ -190,11 +190,16 @@ function isLanguageReady(loc: LocalizedArticle | undefined) {
   return loc?.translationStatus === "ready" && loc.audioStatus === "ready" && Boolean(loc.audioUrl);
 }
 
-function hasLocalizationFailure(article: Article) {
-  return SUPPORTED_LANGUAGES.some((language) => {
-    const loc = article.languages?.[language.id];
-    return loc?.translationStatus === "failed" || loc?.audioStatus === "failed";
-  });
+export function shouldProcessHistoricalArticle(article: Article, retryFailedOnly: boolean) {
+  const fullyReady = SUPPORTED_LANGUAGES.every((language) =>
+    isLanguageReady(article.languages?.[language.id]),
+  );
+  if (fullyReady) return false;
+  if (retryFailedOnly) {
+    return Boolean(article.localizationBackfillFirstPassAt) &&
+      Number(article.localizationBackfillAttempts || 0) < 3;
+  }
+  return !article.localizationBackfillFirstPassAt;
 }
 
 export function isPublishedArticle(article: Article) {
@@ -843,15 +848,7 @@ export async function runHistoricalLocalizationBatch(maxArticles = 1, retryFaile
       result.malformed += 1;
       continue;
     }
-    if (retryFailedOnly && !hasLocalizationFailure(article)) {
-      result.skipped += 1;
-      continue;
-    }
-    if (retryFailedOnly && Number(article.localizationBackfillAttempts || 0) >= 3) {
-      result.skipped += 1;
-      continue;
-    }
-    if (SUPPORTED_LANGUAGES.every((language) => isLanguageReady(article.languages?.[language.id]))) {
+    if (!shouldProcessHistoricalArticle(article, retryFailedOnly)) {
       result.skipped += 1;
       continue;
     }
@@ -861,6 +858,10 @@ export async function runHistoricalLocalizationBatch(maxArticles = 1, retryFaile
       if (retryFailedOnly) {
         await snapshot.ref.set({
           localizationBackfillAttempts: Number(article.localizationBackfillAttempts || 0) + 1,
+        }, { merge: true });
+      } else {
+        await snapshot.ref.set({
+          localizationBackfillFirstPassAt: Date.now(),
         }, { merge: true });
       }
       await processLocalization(snapshot.id, undefined, result);

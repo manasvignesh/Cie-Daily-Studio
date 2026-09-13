@@ -4,6 +4,7 @@ import {
   canonicalEnglishArticle,
   chronologicalMillis,
   isPublishedArticle,
+  shouldProcessHistoricalArticle,
 } from "../src/lib/localization.ts";
 
 test("historical localization targets published articles but never reels", () => {
@@ -49,4 +50,22 @@ test("English backfill maps legacy description and rich top-level fields", () =>
   assert.equal(rich.full_article.what_happened, "Existing event detail.");
   assert.equal(rich.full_article.why_this_matters, "Existing impact detail.");
   assert.deepEqual(rich.full_article.takeaways, ["Existing takeaway."]);
+});
+
+test("first pass advances past attempted failures and retry revisits them", () => {
+  const failed = {
+    localizationBackfillFirstPassAt: 123,
+    localizationBackfillAttempts: 0,
+    languages: {
+      en: { translationStatus: "ready", audioStatus: "failed" },
+    },
+  };
+
+  assert.equal(shouldProcessHistoricalArticle(failed as never, false), false);
+  assert.equal(shouldProcessHistoricalArticle(failed as never, true), true);
+  assert.equal(shouldProcessHistoricalArticle({
+    ...failed,
+    localizationBackfillAttempts: 3,
+  } as never, true), false);
+  assert.equal(shouldProcessHistoricalArticle({ languages: {} } as never, false), true);
 });
