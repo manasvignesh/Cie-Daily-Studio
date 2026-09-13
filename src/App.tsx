@@ -130,6 +130,17 @@ const nav = [
 ] as const;
 const fmt = (value: any) => value?.toDate?.().toLocaleDateString() || "—";
 
+function articleTime(article: Article) {
+  const value = article.publishedAt || article.createdAt;
+  const date = value?.toDate?.();
+  return date instanceof Date && Number.isFinite(date.getTime()) ? date.getTime() : 0;
+}
+
+function newestArticlesFirst(articles: Article[]) {
+  return [...articles].sort((left, right) =>
+    articleTime(right) - articleTime(left) || left.id.localeCompare(right.id));
+}
+
 function useLiveCollection<T>(path: string, constraints: any[] = []) {
   const [data, setData] = useState<T[]>([]),
     [loading, setLoading] = useState(true),
@@ -465,19 +476,17 @@ function Empty({
   );
 }
 function Overview() {
-  const posts = useLiveCollection<Article>("posts", [
-      orderBy("createdAt", "desc"),
-      limit(50),
-    ]),
+  const posts = useLiveCollection<Article>("posts", [limit(500)]),
     streams = useLiveCollection<LiveStream>("liveStreams", [
       orderBy("createdAt", "desc"),
       limit(20),
     ]);
-  const today = new Date().toDateString(),
+  const chronologicalPosts = newestArticlesFirst(posts.data),
+    today = new Date().toDateString(),
     published = posts.data.filter(
       (p) =>
         p.status === "approved" &&
-        p.createdAt?.toDate?.().toDateString() === today,
+        (p.publishedAt || p.createdAt)?.toDate?.().toDateString() === today,
     ).length,
     drafts = posts.data.filter((p) => p.status === "draft").length,
     scheduled = posts.data.filter((p) => p.status === "scheduled").length,
@@ -541,7 +550,7 @@ function Overview() {
         </section>
         <section className="panel">
           <h2>Recent activity</h2>
-          {posts.data.slice(0, 5).map((p) => (
+          {chronologicalPosts.slice(0, 5).map((p) => (
             <div className="row" key={p.id}>
               <span className="thumb">
                 {p.imageUrl ? <img src={p.imageUrl} /> : <BookOpen />}
@@ -549,7 +558,7 @@ function Overview() {
               <div>
                 <b>{p.title}</b>
                 <small>
-                  {p.status} · {fmt(p.createdAt)}
+                  {p.status} · {fmt(p.publishedAt || p.createdAt)}
                 </small>
               </div>
             </div>
@@ -857,11 +866,8 @@ function EditorialReview({
 
 function Articles() {
   const navg = useNavigate(),
-    { data, loading } = useLiveCollection<Article>("posts", [
-      orderBy("createdAt", "desc"),
-      limit(100),
-    ]);
-  const articles = data.filter((p) => p.category !== "Reel"),
+    { data, loading } = useLiveCollection<Article>("posts", [limit(500)]);
+  const articles = newestArticlesFirst(data.filter((p) => p.category !== "Reel")),
     [q, setQ] = useState("");
   const filtered = articles.filter((a) =>
     `${a.title} ${a.articleCategory || ""}`
@@ -964,7 +970,7 @@ function Articles() {
                     {a.isFeatured ? "Featured" : "Feature"}
                   </button>
                 </span>
-                <span>{fmt(a.createdAt)}</span>
+                <span>{fmt(a.publishedAt || a.createdAt)}</span>
               </button>
             );
           })
@@ -1017,7 +1023,7 @@ function HistoricalLocalizationPanel() {
         <div>
           <p className="eyebrow" style={{ margin: 0 }}>HISTORICAL LOCALIZATION</p>
           <span style={{ fontSize: 13 }}>
-            {audit ? `Total ${audit.total} · Complete ${audit.complete} · Pending ${audit.pending} · Failed ${audit.failed}` : "Loading audit…"}
+            {audit ? `Total ${audit.total} · Complete ${audit.complete} · Pending ${audit.pending} · Failed ${audit.failed} · Malformed ${audit.malformed}` : "Loading audit…"}
           </span>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -1028,7 +1034,7 @@ function HistoricalLocalizationPanel() {
         </div>
       </div>
       {audit && <div style={{ marginTop: 8, fontSize: 12, color: "var(--muted)" }}>
-        EN {audit.languages.en.translationReady}/{audit.languages.en.audioReady} · HI {audit.languages.hi.translationReady}/{audit.languages.hi.audioReady} · TE {audit.languages.te.translationReady}/{audit.languages.te.audioReady}
+        EN {audit.languages.en.translationReady}/{audit.languages.en.audioReady} · HI {audit.languages.hi.translationReady}/{audit.languages.hi.audioReady} · TE {audit.languages.te.translationReady}/{audit.languages.te.audioReady} · Missing audio {audit.missingAudio}
       </div>}
       {message && <div className="notice" style={{ marginTop: 10 }}>{message}</div>}
     </section>

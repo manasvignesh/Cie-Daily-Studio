@@ -26,6 +26,10 @@ export type LocalizationAudit = {
   legacy: number;
   schemaV2: number;
   malformed: number;
+  missingEn: number;
+  missingHi: number;
+  missingTe: number;
+  missingAudio: number;
   languages: Record<string, { translationReady: number; audioReady: number }>;
 };
 
@@ -138,6 +142,30 @@ function hasLocalizationFailure(article: Article) {
     const loc = article.languages?.[language.id];
     return loc?.translationStatus === "failed" || loc?.audioStatus === "failed";
   });
+}
+
+export function isPublishedArticle(article: Article) {
+  return (article.status === "approved" || article.status === "published") &&
+    article.category !== "Reel";
+}
+
+function dateMillis(value: unknown) {
+  if (!value) return 0;
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  if (typeof value === "object") {
+    const timestamp = value as { toMillis?: () => number; toDate?: () => Date };
+    if (typeof timestamp.toMillis === "function") return timestamp.toMillis();
+    if (typeof timestamp.toDate === "function") return timestamp.toDate().getTime();
+  }
+  return 0;
+}
+
+export function chronologicalMillis(article: Article) {
+  return dateMillis(article.publishedAt) || dateMillis(article.createdAt);
 }
 
 function safeResponseError(value: string) {
@@ -682,7 +710,7 @@ export async function processLocalization(
 export async function auditHistoricalLocalization(): Promise<LocalizationAudit> {
   const docs = (await getFirestore().collection("posts").get()).docs
     .map((snapshot) => ({ id: snapshot.id, ...snapshot.data() } as Article));
-  const published = docs.filter((article) => article.status === "approved" || article.status === "published");
+  const published = docs.filter(isPublishedArticle);
   const audit: LocalizationAudit = {
     total: published.length,
     complete: 0,
@@ -696,6 +724,10 @@ export async function auditHistoricalLocalization(): Promise<LocalizationAudit> 
     legacy: 0,
     schemaV2: 0,
     malformed: 0,
+    missingEn: 0,
+    missingHi: 0,
+    missingTe: 0,
+    missingAudio: 0,
     languages: Object.fromEntries(SUPPORTED_LANGUAGES.map((language) => [
       language.id,
       { translationReady: 0, audioReady: 0 },
@@ -715,6 +747,12 @@ export async function auditHistoricalLocalization(): Promise<LocalizationAudit> 
     if ((article.schema_version || 1) < 2) audit.legacy += 1;
     else audit.schemaV2 += 1;
     if (!canonicalEnglishArticle(article)) audit.malformed += 1;
+    if (languages.en?.translationStatus !== "ready") audit.missingEn += 1;
+    if (languages.hi?.translationStatus !== "ready") audit.missingHi += 1;
+    if (languages.te?.translationStatus !== "ready") audit.missingTe += 1;
+    if (SUPPORTED_LANGUAGES.some((language) => !isLanguageReady(languages[language.id]))) {
+      audit.missingAudio += 1;
+    }
     for (const language of SUPPORTED_LANGUAGES) {
       const loc = languages[language.id];
       if (loc?.translationStatus === "ready") audit.languages[language.id].translationReady += 1;
@@ -728,7 +766,11 @@ export async function auditHistoricalLocalization(): Promise<LocalizationAudit> 
 
 export async function runHistoricalLocalizationBatch(maxArticles = 1, retryFailedOnly = false): Promise<BackfillResult> {
   const db = getFirestore();
-  const docs = (await db.collection("posts").get()).docs;
+  const docs = (await db.collection("posts").get()).docs
+    .sort((left, right) => {
+      const byDate = chronologicalMillis(left.data() as Article) - chronologicalMillis(right.data() as Article);
+      return byDate || left.id.localeCompare(right.id);
+    });
   const result: BackfillResult = {
     examined: 0,
     processed: 0,
@@ -742,13 +784,17 @@ export async function runHistoricalLocalizationBatch(maxArticles = 1, retryFaile
   for (const snapshot of docs) {
     if (result.processed >= Math.max(1, Math.min(maxArticles, 2))) break;
     const article = snapshot.data() as Article;
-    if (article.status !== "approved" && article.status !== "published") continue;
+    if (!isPublishedArticle(article)) continue;
     result.examined += 1;
     if (!canonicalEnglishArticle(article)) {
       result.malformed += 1;
       continue;
     }
     if (retryFailedOnly && !hasLocalizationFailure(article)) {
+      result.skipped += 1;
+      continue;
+    }
+    if (retryFailedOnly && Number(article.localizationBackfillAttempts || 0) >= 3) {
       result.skipped += 1;
       continue;
     }
@@ -759,6 +805,11 @@ export async function runHistoricalLocalizationBatch(maxArticles = 1, retryFaile
     result.processed += 1;
     result.articleIds.push(snapshot.id);
     try {
+      if (retryFailedOnly) {
+        await snapshot.ref.set({
+          localizationBackfillAttempts: Number(article.localizationBackfillAttempts || 0) + 1,
+        }, { merge: true });
+      }
       await processLocalization(snapshot.id, undefined, result);
     } catch (error) {
       console.error(`[BACKFILL] article ${snapshot.id} failed without stopping the batch`, error);

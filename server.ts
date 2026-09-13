@@ -668,7 +668,7 @@ function requireEditorialWorker(req: Request, res: Response, next: () => void) {
 }
 
 type LocalizationBackfillJob = {
-  phase: "paused" | "pilot" | "awaiting_verification" | "running" | "retry_failed";
+  phase: "paused" | "pilot" | "awaiting_verification" | "running" | "retry_failed" | "complete";
   pilotProcessed?: number;
   lastRunAt?: number;
   lastResult?: Record<string, unknown>;
@@ -683,14 +683,19 @@ async function localizationBackfillJob(): Promise<LocalizationBackfillJob> {
 
 async function runManagedLocalizationBackfill() {
   const job = await localizationBackfillJob();
-  if (job.phase === "paused" || job.phase === "awaiting_verification") {
+  if (job.phase === "paused" || job.phase === "awaiting_verification" || job.phase === "complete") {
     return { job, result: null };
   }
   const result = await runHistoricalLocalizationBatch(1, job.phase === "retry_failed");
   const pilotProcessed = (job.pilotProcessed || 0) + result.processed;
-  const phase = job.phase === "pilot" && pilotProcessed >= 2
-    ? "awaiting_verification"
-    : job.phase;
+  let phase: LocalizationBackfillJob["phase"] = job.phase;
+  if (job.phase === "pilot" && pilotProcessed >= 2) {
+    phase = "awaiting_verification";
+  } else if (job.phase === "running" && result.processed === 0) {
+    phase = "retry_failed";
+  } else if (job.phase === "retry_failed" && result.processed === 0) {
+    phase = "complete";
+  }
   const nextJob = {
     ...job,
     phase,
