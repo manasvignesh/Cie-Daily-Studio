@@ -11,10 +11,133 @@ const sarvamTtsModel = "bulbul:v3";
 const sarvamTtsLimit = 2500;
 const sarvamTtsChunkTarget = 2300;
 const CONCURRENCY_LIMIT = 2;
+const STALE_PROCESSING_MS = 30 * 60 * 1000;
+
+export type LocalizationAudit = {
+  total: number;
+  complete: number;
+  pending: number;
+  failed: number;
+  missingLanguages: number;
+  enOnly: number;
+  enTe: number;
+  translationReadyAudioMissing: number;
+  audioFailed: number;
+  legacy: number;
+  schemaV2: number;
+  malformed: number;
+  languages: Record<string, { translationReady: number; audioReady: number }>;
+};
+
+export type BackfillResult = {
+  examined: number;
+  processed: number;
+  skipped: number;
+  malformed: number;
+  translationsStarted: number;
+  audioStarted: number;
+  articleIds: string[];
+};
 
 function hashArticle(article: Article) {
   const content = JSON.stringify(article.quick_brief) + JSON.stringify(article.full_article);
   return crypto.createHash("md5").update(content).digest("hex");
+}
+
+function isStaleProcessing(loc: LocalizedArticle) {
+  return loc.processingStartedAt != null && Date.now() - loc.processingStartedAt > STALE_PROCESSING_MS;
+}
+
+function hasUsableEnglish(article: Article) {
+  return Boolean(
+    article.quick_brief &&
+    article.full_article &&
+    typeof article.quick_brief.headline === "string" &&
+    typeof article.full_article.what_happened === "string",
+  );
+}
+
+function firstSentence(text: string) {
+  return text.split(/(?<=[.!?।॥])\s+/u).find(Boolean)?.trim() || text.trim();
+}
+
+function limitWords(text: string, maxWords: number) {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  return words.length > maxWords ? `${words.slice(0, maxWords).join(" ")}...` : words.join(" ");
+}
+
+function legacyBodyText(article: Article) {
+  const blockText = Array.isArray(article.blocks)
+    ? article.blocks
+        .map((block) => {
+          if (!block || typeof block !== "object") return "";
+          const value = block as Record<string, unknown>;
+          if (value.type && value.type !== "text") return "";
+          return String(value.content || value.text || "").trim();
+        })
+        .filter(Boolean)
+    : [];
+  return blockText.length ? blockText.join("\n\n") : String(article.raw_input || "").trim();
+}
+
+function canonicalEnglishArticle(article: Article): Article | null {
+  if (hasUsableEnglish(article)) return article;
+
+  const body = legacyBodyText(article);
+  const headline = String(article.title || article.quick_brief?.headline || "").trim();
+  if (!headline || !body) return null;
+
+  const summary = limitWords(firstSentence(body), 60);
+  const bodyParagraphs = body
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const takeaways = bodyParagraphs.length
+    ? bodyParagraphs.slice(0, 3).map((part) => limitWords(part, 18))
+    : [summary];
+
+  return {
+    ...article,
+    schema_version: Math.max(Number(article.schema_version || 1), 2),
+    category: article.category || article.articleCategory || "Article",
+    quick_brief: {
+      category: article.category || article.articleCategory || "Article",
+      headline,
+      quick_summary: summary,
+      three_things_to_know: takeaways.slice(0, 3),
+      key_number: null,
+    },
+    full_article: {
+      headline,
+      hook: summary,
+      in_20_seconds: summary,
+      what_happened: body,
+      why_this_matters: summary,
+      bigger_picture: "",
+      key_stats: [],
+      explore_sections: [
+        {
+          title: "Story",
+          summary,
+          content: body,
+          items: [],
+        },
+      ],
+      takeaways: takeaways.slice(0, 5),
+      quote: null,
+    },
+  };
+}
+
+function isLanguageReady(loc: LocalizedArticle | undefined) {
+  return loc?.translationStatus === "ready" && loc.audioStatus === "ready" && Boolean(loc.audioUrl);
+}
+
+function hasLocalizationFailure(article: Article) {
+  return SUPPORTED_LANGUAGES.some((language) => {
+    const loc = article.languages?.[language.id];
+    return loc?.translationStatus === "failed" || loc?.audioStatus === "failed";
+  });
 }
 
 function safeResponseError(value: string) {
@@ -330,7 +453,8 @@ async function localizeLanguage(
   article: Article,
   currentHash: string,
   lang: LanguageConfig,
-  existingLoc?: LocalizedArticle
+  existingLoc?: LocalizedArticle,
+  stats?: BackfillResult,
 ): Promise<LocalizedArticle> {
   const loc: LocalizedArticle = existingLoc
     ? { ...existingLoc }
@@ -350,14 +474,16 @@ async function localizeLanguage(
     loc.translationStatus = "ready";
   } else {
     const needsTranslation =
-      loc.originalHash !== currentHash ||
       loc.translationStatus === "failed" ||
       loc.translationStatus === "pending" ||
+      (loc.translationStatus === "processing" && isStaleProcessing(loc)) ||
       !loc.title;
 
     if (needsTranslation) {
       console.log(`[LOCALIZATION] ${lang.name} (${lang.id}) translation started`);
       loc.translationStatus = "processing";
+      loc.processingStartedAt = Date.now();
+      if (stats) stats.translationsStarted += 1;
       await docRef.update({ [`languages.${lang.id}`]: loc });
 
       try {
@@ -425,6 +551,7 @@ async function localizeLanguage(
         loc.translationStatus = "ready";
         loc.originalHash = currentHash;
         loc.audioStatus = "pending";
+        loc.processingStartedAt = null;
         await docRef.update({ [`languages.${lang.id}`]: loc });
         console.log(`[LOCALIZATION] ${lang.name} (${lang.id}) translation complete`);
       } catch (err) {
@@ -432,6 +559,7 @@ async function localizeLanguage(
         console.error(`[LOCALIZATION] ${lang.name} (${lang.id}) translation FAILED for ${articleId}:`, msg);
         loc.translationStatus = "failed";
         loc.audioStatus = "failed";
+        loc.processingStartedAt = null;
         await docRef.update({ [`languages.${lang.id}`]: loc });
         return loc;
       }
@@ -441,14 +569,16 @@ async function localizeLanguage(
   // 2. TTS Generation & Upload Step
   if (lang.ttsEnabled && loc.translationStatus === "ready") {
     const needsAudio =
-      loc.originalHash !== currentHash ||
       loc.audioStatus === "pending" ||
       loc.audioStatus === "failed" ||
+      (loc.audioStatus === "processing" && isStaleProcessing(loc)) ||
       !loc.audioUrl;
 
     if (needsAudio) {
       console.log(`[TTS] ${lang.name} (${lang.id}) started`);
       loc.audioStatus = "processing";
+      loc.processingStartedAt = Date.now();
+      if (stats) stats.audioStarted += 1;
       await docRef.update({ [`languages.${lang.id}`]: loc });
 
       try {
@@ -460,12 +590,14 @@ async function localizeLanguage(
         loc.audioUrl = upload.publicUrl;
         loc.audioStatus = "ready";
         loc.originalHash = currentHash;
+        loc.processingStartedAt = null;
         await docRef.update({ [`languages.${lang.id}`]: loc });
         console.log(`[STORAGE] ${lang.name} (${lang.id}) audio uploaded — ${upload.objectPath}`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[TTS] ${lang.name} (${lang.id}) FAILED for ${articleId}:`, msg);
         loc.audioStatus = "failed";
+        loc.processingStartedAt = null;
         await docRef.update({ [`languages.${lang.id}`]: loc });
       }
     }
@@ -477,6 +609,7 @@ async function localizeLanguage(
 export async function processLocalization(
   articleId: string,
   targetLanguageIds?: string[],
+  stats?: BackfillResult,
 ) {
   console.log(`[LOCALIZATION] started for article ${articleId}`);
   console.log(`[LOCALIZATION] SARVAM_API_KEY configured: ${!!process.env.SARVAM_API_KEY}`);
@@ -489,10 +622,25 @@ export async function processLocalization(
     return;
   }
 
-  const article = snapshot.data() as Article;
+  let article = snapshot.data() as Article;
   if (article.status !== "approved" && article.status !== "published") {
     console.warn(`[LOCALIZATION] post ${articleId} status is "${article.status}" — skipping (need approved/published)`);
     return;
+  }
+  const canonicalArticle = canonicalEnglishArticle(article);
+  if (!canonicalArticle) {
+    console.warn(`[LOCALIZATION] post ${articleId} is missing the canonical English article structure — skipping`);
+    if (stats) stats.malformed += 1;
+    return;
+  }
+  if (!hasUsableEnglish(article)) {
+    article = canonicalArticle;
+    await docRef.set({
+      schema_version: article.schema_version,
+      quick_brief: article.quick_brief,
+      full_article: article.full_article,
+    }, { merge: true });
+    console.log(`[LOCALIZATION] post ${articleId} English article structure backfilled from existing content`);
   }
 
   const currentHash = hashArticle(article);
@@ -521,6 +669,7 @@ export async function processLocalization(
         currentHash,
         lang,
         languages[lang.id],
+        stats,
       );
     } catch (err: any) {
       console.error(`[LOCALIZATION] unhandled error for ${lang.id}:`, err?.message || err);
@@ -528,4 +677,92 @@ export async function processLocalization(
   });
 
   console.log(`[LOCALIZATION] completed for article ${articleId}`);
+}
+
+export async function auditHistoricalLocalization(): Promise<LocalizationAudit> {
+  const docs = (await getFirestore().collection("posts").get()).docs
+    .map((snapshot) => ({ id: snapshot.id, ...snapshot.data() } as Article));
+  const published = docs.filter((article) => article.status === "approved" || article.status === "published");
+  const audit: LocalizationAudit = {
+    total: published.length,
+    complete: 0,
+    pending: 0,
+    failed: 0,
+    missingLanguages: 0,
+    enOnly: 0,
+    enTe: 0,
+    translationReadyAudioMissing: 0,
+    audioFailed: 0,
+    legacy: 0,
+    schemaV2: 0,
+    malformed: 0,
+    languages: Object.fromEntries(SUPPORTED_LANGUAGES.map((language) => [
+      language.id,
+      { translationReady: 0, audioReady: 0 },
+    ])),
+  };
+
+  for (const article of published) {
+    const languages = article.languages || {};
+    const keys = Object.keys(languages);
+    const fullyReady = SUPPORTED_LANGUAGES.every((language) => isLanguageReady(languages[language.id]));
+    if (fullyReady) audit.complete += 1;
+    else if (Object.values(languages).some((loc) => loc.translationStatus === "failed" || loc.audioStatus === "failed")) audit.failed += 1;
+    else audit.pending += 1;
+    if (!keys.length) audit.missingLanguages += 1;
+    if (keys.length === 1 && keys[0] === "en") audit.enOnly += 1;
+    if (keys.includes("en") && keys.includes("te") && !keys.includes("hi")) audit.enTe += 1;
+    if ((article.schema_version || 1) < 2) audit.legacy += 1;
+    else audit.schemaV2 += 1;
+    if (!canonicalEnglishArticle(article)) audit.malformed += 1;
+    for (const language of SUPPORTED_LANGUAGES) {
+      const loc = languages[language.id];
+      if (loc?.translationStatus === "ready") audit.languages[language.id].translationReady += 1;
+      if (isLanguageReady(loc)) audit.languages[language.id].audioReady += 1;
+      if (loc?.translationStatus === "ready" && !isLanguageReady(loc)) audit.translationReadyAudioMissing += 1;
+      if (loc?.audioStatus === "failed") audit.audioFailed += 1;
+    }
+  }
+  return audit;
+}
+
+export async function runHistoricalLocalizationBatch(maxArticles = 1, retryFailedOnly = false): Promise<BackfillResult> {
+  const db = getFirestore();
+  const docs = (await db.collection("posts").get()).docs;
+  const result: BackfillResult = {
+    examined: 0,
+    processed: 0,
+    skipped: 0,
+    malformed: 0,
+    translationsStarted: 0,
+    audioStarted: 0,
+    articleIds: [],
+  };
+
+  for (const snapshot of docs) {
+    if (result.processed >= Math.max(1, Math.min(maxArticles, 2))) break;
+    const article = snapshot.data() as Article;
+    if (article.status !== "approved" && article.status !== "published") continue;
+    result.examined += 1;
+    if (!canonicalEnglishArticle(article)) {
+      result.malformed += 1;
+      continue;
+    }
+    if (retryFailedOnly && !hasLocalizationFailure(article)) {
+      result.skipped += 1;
+      continue;
+    }
+    if (SUPPORTED_LANGUAGES.every((language) => isLanguageReady(article.languages?.[language.id]))) {
+      result.skipped += 1;
+      continue;
+    }
+    result.processed += 1;
+    result.articleIds.push(snapshot.id);
+    try {
+      await processLocalization(snapshot.id, undefined, result);
+    } catch (error) {
+      console.error(`[BACKFILL] article ${snapshot.id} failed without stopping the batch`, error);
+    }
+  }
+  return result;
 }

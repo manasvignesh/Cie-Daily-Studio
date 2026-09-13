@@ -16,6 +16,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  localization-backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Process one authorized historical localization batch
+        env:
+          EDITORIAL_WORKER_SECRET: ${{ secrets.EDITORIAL_INGEST_SECRET }}
+        run: |
+          curl --fail --silent --show-error --max-time 295 \
+            -H "Authorization: Bearer ${EDITORIAL_WORKER_SECRET}" \
+            https://cie-daily-studio.vercel.app/api/localization-worker
+
   process:
     if: >-
       github.event_name != 'workflow_run' ||

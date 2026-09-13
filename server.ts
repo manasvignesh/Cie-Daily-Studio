@@ -39,7 +39,11 @@ import {
   submitEditorialStoryTool,
 } from "./src/lib/editorial-tool.ts";
 import { dispatchEditorialWorker } from "./src/lib/github-worker-trigger.ts";
-import { processLocalization } from "./src/lib/localization.ts";
+import {
+  auditHistoricalLocalization,
+  processLocalization,
+  runHistoricalLocalizationBatch,
+} from "./src/lib/localization.ts";
 
 const projectId =
   process.env.FIREBASE_PROJECT_ID ||
@@ -663,6 +667,41 @@ function requireEditorialWorker(req: Request, res: Response, next: () => void) {
   next();
 }
 
+type LocalizationBackfillJob = {
+  phase: "paused" | "pilot" | "awaiting_verification" | "running" | "retry_failed";
+  pilotProcessed?: number;
+  lastRunAt?: number;
+  lastResult?: Record<string, unknown>;
+};
+
+const localizationBackfillRef = () => getFirestore().collection("admin_jobs").doc("localization_backfill");
+
+async function localizationBackfillJob(): Promise<LocalizationBackfillJob> {
+  const snapshot = await localizationBackfillRef().get();
+  return { phase: "paused", ...(snapshot.exists ? snapshot.data() : {}) } as LocalizationBackfillJob;
+}
+
+async function runManagedLocalizationBackfill() {
+  const job = await localizationBackfillJob();
+  if (job.phase === "paused" || job.phase === "awaiting_verification") {
+    return { job, result: null };
+  }
+  const result = await runHistoricalLocalizationBatch(1, job.phase === "retry_failed");
+  const pilotProcessed = (job.pilotProcessed || 0) + result.processed;
+  const phase = job.phase === "pilot" && pilotProcessed >= 2
+    ? "awaiting_verification"
+    : job.phase;
+  const nextJob = {
+    ...job,
+    phase,
+    pilotProcessed,
+    lastRunAt: Date.now(),
+    lastResult: result,
+  };
+  await localizationBackfillRef().set(nextJob, { merge: true });
+  return { job: nextJob, result };
+}
+
 const editorialToolBuckets = new Map<string, { count: number; resetAt: number }>();
 function requireEditorialToolKey(req: Request, res: Response, next: () => void) {
   const configured = process.env.CIE_DAILY_TOOL_API_KEY || "";
@@ -1219,6 +1258,55 @@ app.post("/api/posts/:id/localize", requireAuth, requireStaff, async (req: Authe
   } catch (err: any) {
     console.error("[LOCALIZATION] failed", { postId, error: err.message });
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/localization/audit", requireAuth, requireStaff, async (_req, res) => {
+  try {
+    const [audit, job] = await Promise.all([
+      auditHistoricalLocalization(),
+      localizationBackfillJob(),
+    ]);
+    res.json({ audit, job });
+  } catch (error: any) {
+    console.error("[BACKFILL] audit failed", error?.message || error);
+    res.status(500).json({ error: "localization_audit_failed" });
+  }
+});
+
+app.post("/api/localization/backfill", requireAuth, requireStaff, async (req: AuthedRequest, res) => {
+  const action = String(req.body?.action || "");
+  try {
+    if (action === "pause") {
+      await localizationBackfillRef().set({ phase: "paused", lastRunAt: Date.now() }, { merge: true });
+      return res.json({ ok: true, job: await localizationBackfillJob() });
+    }
+    if (action === "pilot") {
+      await localizationBackfillRef().set({ phase: "pilot", pilotProcessed: 0 }, { merge: true });
+    } else if (action === "resume") {
+      await localizationBackfillRef().set({ phase: "running" }, { merge: true });
+    } else if (action === "retry_failed") {
+      await localizationBackfillRef().set({ phase: "retry_failed" }, { merge: true });
+    } else if (action !== "run_once") {
+      return res.status(400).json({ error: "invalid_backfill_action" });
+    }
+    const run = action === "run_once"
+      ? { job: await localizationBackfillJob(), result: await runHistoricalLocalizationBatch(1) }
+      : await runManagedLocalizationBackfill();
+    return res.json({ ok: true, ...run, audit: await auditHistoricalLocalization() });
+  } catch (error: any) {
+    console.error("[BACKFILL] managed run failed", error?.message || error);
+    res.status(500).json({ error: "localization_backfill_failed" });
+  }
+});
+
+app.get("/api/localization-worker", requireEditorialWorker, async (_req, res) => {
+  try {
+    const run = await runManagedLocalizationBackfill();
+    res.json({ ok: true, ...run });
+  } catch (error: any) {
+    console.error("[BACKFILL] worker run failed", error?.message || error);
+    res.status(500).json({ error: "localization_worker_failed" });
   }
 });
 

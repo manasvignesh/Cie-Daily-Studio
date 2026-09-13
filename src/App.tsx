@@ -891,6 +891,7 @@ function Articles() {
           </button>
         }
       />
+      <HistoricalLocalizationPanel />
       <FeaturedManager articles={articles} />
       <div className="toolbar">
         <div>
@@ -970,6 +971,67 @@ function Articles() {
         )}
       </section>
     </>
+  );
+}
+
+function HistoricalLocalizationPanel() {
+  const [data, setData] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  const load = async () => {
+    const token = await auth.currentUser?.getIdToken();
+    const response = await fetch("/api/localization/audit", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error("Could not load historical localization status.");
+    setData(await response.json());
+  };
+
+  useEffect(() => { void load().catch((error) => setMessage(error.message)); }, []);
+
+  const act = async (action: "pilot" | "resume" | "retry_failed" | "pause") => {
+    setBusy(true);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      const response = await fetch("/api/localization/backfill", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Historical localization failed.");
+      setData({ audit: body.audit, job: body.job });
+      setMessage(action === "pause" ? "Historical localization paused." : "Historical localization batch completed.");
+    } catch (error: any) {
+      setMessage(error.message || "Historical localization failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const audit = data?.audit;
+  return (
+    <section className="panel" style={{ padding: "14px 20px", marginBottom: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <div>
+          <p className="eyebrow" style={{ margin: 0 }}>HISTORICAL LOCALIZATION</p>
+          <span style={{ fontSize: 13 }}>
+            {audit ? `Total ${audit.total} · Complete ${audit.complete} · Pending ${audit.pending} · Failed ${audit.failed}` : "Loading audit…"}
+          </span>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button type="button" disabled={busy} onClick={() => void act("pilot")}>Start pilot</button>
+          <button type="button" disabled={busy} onClick={() => void act("resume")}>Resume</button>
+          <button type="button" disabled={busy} onClick={() => void act("retry_failed")}>Retry failed</button>
+          <button type="button" disabled={busy} onClick={() => void act("pause")}>Pause</button>
+        </div>
+      </div>
+      {audit && <div style={{ marginTop: 8, fontSize: 12, color: "var(--muted)" }}>
+        EN {audit.languages.en.translationReady}/{audit.languages.en.audioReady} · HI {audit.languages.hi.translationReady}/{audit.languages.hi.audioReady} · TE {audit.languages.te.translationReady}/{audit.languages.te.audioReady}
+      </div>}
+      {message && <div className="notice" style={{ marginTop: 10 }}>{message}</div>}
+    </section>
   );
 }
 function FeaturedManager({ articles }: { articles: Article[] }) {
