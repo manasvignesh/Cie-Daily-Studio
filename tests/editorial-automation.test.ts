@@ -182,14 +182,12 @@ class MemoryStore implements EditorialStore {
   }
 }
 
-test('sample ingestion reaches review and publishes the canonical schema', async () => {
+test('sample ingestion automatically publishes the canonical schema', async () => {
   const store = new MemoryStore();
   const service = new EditorialService(store, async () => generated);
-  const ready = await service.ingest(story);
-  assert.equal(ready.status, 'ready_for_review');
-  assert.equal(ready.generatedArticle?.schema_version, 2);
-  const published = await service.publish(ready.id, { uid: 'editor', name: 'Editor', email: 'editor@example.com' });
+  const published = await service.ingest(story);
   assert.equal(published.status, 'published');
+  assert.equal(published.generatedArticle?.schema_version, 2);
   const post = [...store.posts.values()][0];
   assert.equal(post.status, 'approved');
   assert.equal(post.schema_version, 2);
@@ -220,7 +218,7 @@ test('async ingestion returns before a slow generation and resolves later', asyn
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal((await store.get(queued.id))?.status, 'processing');
   resolveGeneration(generated);
-  assert.equal((await processing).status, 'ready_for_review');
+  assert.equal((await processing).status, 'published');
 });
 
 test('a batch of ten stories queues without synchronous generation', async () => {
@@ -237,7 +235,7 @@ test('a batch of ten stories queues without synchronous generation', async () =>
   assert.equal(store.items.size, 10);
 });
 
-test('worker batch processing resolves at most three of ten pending stories', async () => {
+test('worker batch processing resolves and automatically publishes pending stories', async () => {
   const store = new MemoryStore();
   const service = new EditorialService(store, async () => generated, defaultDomainsForTest(), 2, false);
   for (let index = 0; index < 10; index += 1) {
@@ -250,7 +248,7 @@ test('worker batch processing resolves at most three of ten pending stories', as
   const pending = [...store.items.values()];
   const results = await service.processBatch(pending, 3);
   assert.equal(results.length, 3);
-  assert.equal(results.filter((item) => item.status === 'ready_for_review').length, 3);
+  assert.equal(results.filter((item) => item.status === 'published').length, 3);
   assert.equal([...store.items.values()].filter((item) => item.status === 'discovered').length, 7);
 });
 
@@ -345,8 +343,9 @@ test('NVIDIA formatter failure and invalid output are isolated as failed items',
 
 test('publish failure restores ready-for-review and keeps generated content', async () => {
   const store = new MemoryStore();
-  const service = new EditorialService(store, async () => generated);
+  const service = new EditorialService(store, async () => generated, defaultDomainsForTest(), 2, true, undefined, false);
   const ready = await service.ingest(story);
+  assert.equal(ready.status, 'ready_for_review');
   store.failPublish = true;
   await assert.rejects(() => service.publish(ready.id, { uid: 'editor', name: 'Editor', email: 'editor@example.com' }));
   const recovered = await store.get(ready.id);

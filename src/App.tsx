@@ -28,6 +28,7 @@ import {
   orderBy,
   query,
   serverTimestamp,
+  Timestamp,
   setDoc,
   updateDoc,
   where,
@@ -88,6 +89,7 @@ import {
   emptyQuickBrief,
   toPublishedPost,
   validateArticle,
+  validateAttribution,
 } from "./lib/article-contract";
 import { SUPPORTED_LANGUAGES } from "./lib/languages";
 import type { Article, LiveStream, StudioUser } from "./lib/types";
@@ -213,6 +215,11 @@ function useAuth() {
 
 export function App() {
   const session = useAuth();
+  const location = useLocation();
+  const shareMatch = location.pathname.match(/^\/(list|connect|article|profile)\/([^/]+)$/);
+  if (shareMatch) {
+    return <ShareLanding kind={shareMatch[1]} id={decodeURIComponent(shareMatch[2])} />;
+  }
   if (session.loading) return <Splash />;
   if (!session.user) return <Login />;
   return (
@@ -667,7 +674,7 @@ function EditorialInbox() {
       <PageHead
         kicker="AUTOMATED NEWS DESK"
         title="Editorial Inbox"
-        desc="Gemini is primary and NVIDIA is fallback. Incoming reporting waits here for human approval."
+        desc="Breakpoint automatically publishes valid editorial stories after processing."
         action={
           <button onClick={() => void load()} disabled={loading}>
             <RefreshCw /> Refresh
@@ -681,8 +688,8 @@ function EditorialInbox() {
         <button className={filter === "processing" ? "active" : ""} onClick={() => setFilter("processing")}>
           <strong>{count("processing")}</strong><span>Generating</span>
         </button>
-        <button className={filter === "ready_for_review" ? "active" : ""} onClick={() => setFilter("ready_for_review")}>
-          <strong>{count("ready_for_review")}</strong><span>Ready</span>
+        <button className={filter === "published" ? "active" : ""} onClick={() => setFilter("published")}>
+          <strong>{count("published")}</strong><span>Published</span>
         </button>
         <button className={filter === "failed" ? "active" : ""} onClick={() => setFilter("failed")}>
           <strong>{count("failed")}</strong><span>Needs attention</span>
@@ -708,9 +715,6 @@ function EditorialInbox() {
                   : `Possible duplicate of ${items.find((candidate) => candidate.id === item.duplicate?.matchedQueueId)?.source.title || "another story"} · ${item.duplicate.reason || "strong event/entity match"}`}</em>
               )}
               {item.failureReason && <em className="failedReason">{item.failureReason}</em>}
-              {item.generatedArticle && !item.generatedArticle.imageUrl && (
-                <em><Image /> No source image — replace before publishing</em>
-              )}
             </div>
             <div className="queueSource">
               <b>{item.source.sourceName}</b>
@@ -724,8 +728,8 @@ function EditorialInbox() {
                 <button onClick={() => void action(item, "clear-duplicate")} disabled={busyId === item.id}>Not a duplicate / Process anyway</button>
               )}
               <button onClick={() => void action(item, "regenerate")} disabled={busyId === item.id || item.status === "published"}><RefreshCw /> Regenerate</button>
-              {item.status === "ready_for_review" && (
-                <button className="primary" onClick={() => void action(item, "publish")} disabled={busyId === item.id}><Send /> Approve & Publish</button>
+              {item.status !== "published" && item.generatedArticle && (
+                <button className="primary" onClick={() => void action(item, "publish")} disabled={busyId === item.id}><Send /> {item.status === "failed" ? "Retry publish" : "Publish"}</button>
               )}
               {!['published', 'rejected'].includes(item.status) && (
                 <button onClick={() => void action(item, "reject")} disabled={busyId === item.id}><Ban /> Reject</button>
@@ -856,7 +860,11 @@ function EditorialReview({
           <a href={item.source.sourceUrl} target="_blank" rel="noreferrer">Verify original source ↗</a>
           <div>
             {mode === "edit" && <button onClick={() => void saveEdits()} disabled={saving}>{saving ? "Saving…" : "Save edits"}</button>}
-            <button className="primary" onClick={() => void publish()} disabled={busy || issues.some((issue) => issue.level === "error")}><Send /> Approve & Publish</button>
+            {item.status === 'published' ? (
+              <span className="queueStatus published"><Check /> Published</span>
+            ) : (
+              <button className="primary" onClick={() => void publish()} disabled={busy || issues.some((issue) => issue.level === "error")}><Send /> {item.status === "failed" ? "Retry publish" : "Publish to feed"}</button>
+            )}
           </div>
         </footer>
       </section>
@@ -977,6 +985,36 @@ function Articles() {
         )}
       </section>
     </>
+  );
+}
+
+function ShareLanding({ kind, id }: { kind: string; id: string }) {
+  const [title, setTitle] = useState(kind === "connect" ? "Connect on Breakpoint" : "Open in Breakpoint");
+  const [subtitle, setSubtitle] = useState("A story worth stopping for.");
+  useEffect(() => {
+    if (kind !== "list") return;
+    void getDoc(doc(db, "articleLists", id)).then((snapshot) => {
+      if (!snapshot.exists()) return;
+      const data = snapshot.data();
+      setTitle(String(data.title || "A Breakpoint List"));
+      const count = Array.isArray(data.articleIds) ? data.articleIds.length : 0;
+      setSubtitle(`${String(data.ownerName || "A Breakpoint reader")} · ${count} ${count === 1 ? "story" : "stories"}`);
+    }).catch(() => undefined);
+  }, [kind, id]);
+  const currentUrl = window.location.href;
+  return (
+    <main className="shareLanding">
+      <section className="shareLandingInner">
+        <div className="shareBrand">BREAKP<span>O</span>INT</div>
+        <p className="shareKicker">WORTH STOPPING FOR.</p>
+        <h1>{title}</h1>
+        <p>{kind === "connect" ? "Open Breakpoint to continue this connection." : subtitle}</p>
+        <div className="shareActions">
+          <a className="primary" href={currentUrl}>Open in Breakpoint</a>
+          <a className="ghost" href="https://play.google.com/store/apps/details?id=com.ciedaily.app">Get Breakpoint on Google Play</a>
+        </div>
+      </section>
+    </main>
   );
 }
 
@@ -1255,6 +1293,18 @@ function LocalizationStatusPanel({
   );
 }
 
+function attributionDateInput(value: unknown) {
+  const date = (value as any)?.toDate?.() || (value ? new Date(String(value)) : null);
+  if (!date || Number.isNaN(date.getTime())) return "";
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function attributionTimestamp(value: unknown) {
+  const date = (value as any)?.toDate?.() || (value ? new Date(String(value)) : null);
+  return date && !Number.isNaN(date.getTime()) ? Timestamp.fromDate(date) : null;
+}
+
 function ArticleEditor() {
   const { id } = useParams(),
     navg = useNavigate(),
@@ -1271,14 +1321,26 @@ function ArticleEditor() {
       quick_brief: emptyQuickBrief(),
       full_article: emptyFullArticle(),
       raw_input: "",
+      sourceType: "external",
+      breakpointEditor: "Breakpoint Editorial",
     });
   useEffect(() => {
     if (id)
       getDoc(doc(db, "posts", id)).then((s) => {
-        if (s.exists()) setArticle({ id: s.id, ...s.data() } as Article);
+        if (s.exists()) {
+          const data = s.data() as Partial<Article>;
+          setArticle({
+            id: s.id,
+            ...data,
+            originalPublisher: data.originalPublisher || data.sourceName || "",
+            originalSourceUrl: data.originalSourceUrl || data.sourceUrl || "",
+            breakpointEditor: data.breakpointEditor || "Breakpoint Editorial",
+            sourceType: data.sourceType || (data.sourceUrl ? "external" : undefined),
+          } as Article);
+        }
       });
   }, [id]);
-  const issues = validateArticle(article);
+  const issues = [...validateArticle(article), ...validateAttribution(article)];
   async function uploadCover(file?: File) {
     if (!file) return;
     if (!file.type.startsWith("image/")) {
@@ -1367,6 +1429,8 @@ function ArticleEditor() {
       return;
     }
     setBusy(true);
+    const originalPublishedAt = attributionTimestamp(article.publishedAt);
+    const editorialUpdatedAt = attributionTimestamp(article.updatedAt);
     const u = auth.currentUser!,
       payload = {
         ...toPublishedPost(article, {
@@ -1376,9 +1440,9 @@ function ArticleEditor() {
           avatar: u.photoURL || "",
         }),
         status,
-        updatedAt: serverTimestamp(),
+        updatedAt: editorialUpdatedAt || serverTimestamp(),
         ...(id ? {} : { createdAt: serverTimestamp() }),
-        ...(status === "approved" ? { publishedAt: serverTimestamp() } : {}),
+        ...(originalPublishedAt ? { publishedAt: originalPublishedAt } : {}),
       };
     try {
       let postId = id;
@@ -1495,6 +1559,93 @@ function ArticleEditor() {
               </button>
             )}
           </div>
+        </div>
+      </section>
+      <section className="panel form attributionEditor">
+        <p className="eyebrow">ATTRIBUTION &amp; SOURCE</p>
+        <h2>Story ownership</h2>
+        <p className="muted">Shown on the Swipe Deck and Full Story so readers can identify who reported and prepared the story.</p>
+        <div className="split">
+          <label>
+            Source type *
+            <select
+              value={article.sourceType || ""}
+              onChange={(e) => setArticle({...article, sourceType: e.target.value as Article["sourceType"]})}
+            >
+              <option value="" disabled>Select source type</option>
+              <option value="external">External reporting</option>
+              <option value="original">Original Breakpoint article</option>
+              <option value="official_source">Official source</option>
+              <option value="press_release">Press release</option>
+              <option value="aggregated">Aggregated reporting</option>
+            </select>
+          </label>
+          <label>
+            Original publication date *
+            <input
+              type="datetime-local"
+              value={attributionDateInput(article.publishedAt)}
+              onChange={(e) => setArticle({...article, publishedAt: e.target.value as any})}
+            />
+          </label>
+        </div>
+        {article.sourceType === "original" ? (
+          <label>
+            Author / editorial owner *
+            <input
+              value={article.authorName || ""}
+              onChange={(e) => setArticle({...article, authorName: e.target.value})}
+              placeholder="Name or Breakpoint Editorial"
+            />
+          </label>
+        ) : (
+          <>
+            <div className="split">
+              <label>
+                Original publisher *
+                <input
+                  value={article.originalPublisher || ""}
+                  onChange={(e) => setArticle({...article, originalPublisher: e.target.value})}
+                  placeholder="Reuters, ISRO, The Hindu…"
+                />
+              </label>
+              <label>
+                Original author
+                <input
+                  value={article.authorName || ""}
+                  onChange={(e) => setArticle({...article, authorName: e.target.value})}
+                />
+              </label>
+            </div>
+            <label>
+              Original source URL *
+              <input
+                type="url"
+                inputMode="url"
+                value={article.originalSourceUrl || ""}
+                onChange={(e) => setArticle({...article, originalSourceUrl: e.target.value.trim()})}
+                placeholder="https://publisher.example/story"
+              />
+            </label>
+          </>
+        )}
+        <div className="split">
+          <label>
+            Breakpoint editor
+            <input
+              value={article.breakpointEditor || ""}
+              onChange={(e) => setArticle({...article, breakpointEditor: e.target.value})}
+              placeholder="Breakpoint Editorial"
+            />
+          </label>
+          <label>
+            Last meaningful update
+            <input
+              type="datetime-local"
+              value={attributionDateInput(article.updatedAt)}
+              onChange={(e) => setArticle({...article, updatedAt: e.target.value as any})}
+            />
+          </label>
         </div>
       </section>
       <div className="editorgrid">

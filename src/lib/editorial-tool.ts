@@ -40,7 +40,7 @@ export const submitEditorialStoryInputSchema = {
   properties: {
     stories: {
       type: 'array',
-      description: 'One to ten verified news stories. Each story is queued for human review and is never auto-published.',
+      description: 'One to ten verified news stories. Each story is automatically processed and published directly to the Breakpoint feed when valid.',
       minItems: 1,
       maxItems: 10,
       items: editorialStoryJsonSchema,
@@ -85,7 +85,7 @@ export type EditorialToolResult = {
   ok: boolean;
   submitted: number;
   readyForReview: number;
-  published: false;
+  published: number;
   results: EditorialIngestResult[];
 };
 
@@ -147,7 +147,7 @@ export async function submitEditorialStories(
     ok: rawResults.every((result) => result?.ok === true),
     submitted: rawResults.length,
     readyForReview: rawResults.filter((result) => result?.status === 'ready_for_review').length,
-    published: false,
+    published: rawResults.filter((result) => result?.status === 'published').length,
     results: rawResults,
   };
 }
@@ -155,7 +155,7 @@ export async function submitEditorialStories(
 export const submitEditorialStoryTool = {
   name: 'submit_editorial_story',
   title: 'Submit editorial stories',
-  description: 'Submit one to ten verified news stories to the CIE Daily Editorial Inbox. The existing NVIDIA pipeline generates the Swipe Deck and Full Story, then stops at Ready for Review. This tool never approves or publishes articles.',
+  description: 'Submit one to ten verified news stories to the CIE Daily Editorial Inbox. The existing NVIDIA pipeline generates the Swipe Deck and Full Story, then automatically publishes the verified article to the Breakpoint live feed.',
   inputSchema: submitEditorialStoryInputSchema,
   annotations: {
     readOnlyHint: false,

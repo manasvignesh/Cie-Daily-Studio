@@ -34,7 +34,7 @@ test('tool rejects empty and oversized batches', () => {
   );
 });
 
-test('tool forwards to the existing ingestion endpoint without publishing', async () => {
+test('tool forwards to the ingestion endpoint and tracks published items', async () => {
   let request: RequestInit | undefined;
   const result = await submitEditorialStories(
     { stories: [story] },
@@ -43,16 +43,16 @@ test('tool forwards to the existing ingestion endpoint without publishing', asyn
       fetchImpl: async (_url, init) => {
         request = init;
         return new Response(JSON.stringify({
-          results: [{ ok: true, id: 'queue-test', status: 'ready_for_review', duplicate: null }],
+          results: [{ ok: true, id: 'queue-test', status: 'published', duplicate: null }],
         }), { status: 201, headers: { 'Content-Type': 'application/json' } });
       },
     },
   );
   assert.equal(request?.method, 'POST');
   assert.equal((request?.headers as Record<string, string>).Authorization, 'Bearer server-only-secret');
-  assert.equal(result.readyForReview, 1);
-  assert.equal(result.published, false);
-  assert.deepEqual(result.results.map((item) => item.status), ['ready_for_review']);
+  assert.equal(result.readyForReview, 0);
+  assert.equal(result.published, 1);
+  assert.deepEqual(result.results.map((item) => item.status), ['published']);
 });
 
 test('tool maps a non-JSON upstream failure to a safe error', async () => {

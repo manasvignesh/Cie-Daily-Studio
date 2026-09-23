@@ -4,6 +4,9 @@ export type ValidationIssue = { level: 'error'|'warning'; path: string; message:
 const words = (value='') => value.trim().split(/\s+/).filter(Boolean).length;
 const normalized = (value='') => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
+export const DEFAULT_EDITORIAL_FALLBACK_IMAGE =
+  'https://images.unsplash.com/photo-1585829365295-ab7cd400c167?w=1200&auto=format&fit=crop&q=80';
+
 export function emptyQuickBrief(): QuickBrief { return { category:'', headline:'', quick_summary:'', three_things_to_know:['','',''], key_number:null }; }
 export function emptyFullArticle(): FullArticle { return { headline:'', hook:'', in_20_seconds:'', what_happened:'', why_this_matters:'', bigger_picture:'', key_stats:[], explore_sections:[], takeaways:[], quote:null }; }
 
@@ -28,14 +31,48 @@ export function validateArticle(article: Pick<Article,'quick_brief'|'full_articl
   return out;
 }
 
+export function validateAttribution(article: Partial<Article>): ValidationIssue[] {
+  const out: ValidationIssue[] = [];
+  const sourceType = String(article.sourceType || '').trim();
+  const isOriginal = sourceType === 'original';
+  if (!sourceType) out.push({level:'error',path:'sourceType',message:'Choose a source type.'});
+  const rawDate = article.publishedAt as any;
+  const date = rawDate?.toDate?.() || (rawDate ? new Date(String(rawDate)) : null);
+  if (!date || Number.isNaN(date.getTime())) out.push({level:'error',path:'publishedAt',message:'Original publication date and time is required.'});
+  if (isOriginal) {
+    if (!String(article.authorName || '').trim()) out.push({level:'error',path:'authorName',message:'Author or editorial owner is required for original Breakpoint content.'});
+    return out;
+  }
+  if (!String(article.originalPublisher || article.sourceName || '').trim()) out.push({level:'error',path:'originalPublisher',message:'Original publisher is required.'});
+  const sourceUrl = String(article.originalSourceUrl || article.sourceUrl || '').trim();
+  try {
+    const parsed = new URL(sourceUrl);
+    if (!['http:','https:'].includes(parsed.protocol)) throw new Error('unsafe protocol');
+  } catch {
+    out.push({level:'error',path:'originalSourceUrl',message:'A valid HTTP or HTTPS original source URL is required.'});
+  }
+  return out;
+}
+
 export function toPublishedPost(article: Article, identity:{uid:string;name:string;email:string;avatar?:string}) {
-  const q=article.quick_brief, f=article.full_article, image=article.imageUrl||article.mediaUrls?.[0]||'';
+  const q=article.quick_brief, f=article.full_article;
+  const image = article.imageUrl || article.mediaUrls?.[0] || 'https://images.unsplash.com/photo-1585829365295-ab7cd400c167?w=1200&auto=format&fit=crop&q=80';
+  const sourceType = article.sourceType || 'third_party';
+  const isOriginal = sourceType === 'original';
+  const originalPublisher = isOriginal ? 'Breakpoint' : (article.originalPublisher || article.sourceName || 'Breakpoint Editorial');
+  const originalSourceUrl = isOriginal ? '' : (article.originalSourceUrl || article.sourceUrl || '');
   return {
     schema_version:2, status:'approved', category:'Article', articleCategory:q.category, title:q.headline,
     headline:q.headline, description:f.hook, hook:f.hook, quick_brief:q, full_article:f,
-    mediaUrls:image?[image]:[], imageUrl:image, thumbnailUrl:image, coverImage:image,
-    authorId:identity.uid, authorName:identity.name, authorEmail:identity.email, authorAvatar:identity.avatar||'',
+    mediaUrls:image?[image]:['https://images.unsplash.com/photo-1585829365295-ab7cd400c167?w=1200&auto=format&fit=crop&q=80'], imageUrl:image, thumbnailUrl:image, coverImage:image,
+    authorId:identity.uid, authorName:article.authorName||identity.name||'', authorEmail:identity.email, authorAvatar:identity.avatar||'',
     author:{name:identity.name,fullName:identity.name,email:identity.email,avatarUrl:identity.avatar||''},
+    originalPublisher,
+    originalSourceUrl,
+    sourceName:originalPublisher,
+    sourceUrl:originalSourceUrl,
+    sourceType,
+    breakpointEditor:article.breakpointEditor||'Breakpoint Editorial',
     likedBy:[],bookmarkedBy:[],likesCount:0,commentsCount:0,isTodaysDrop:!!article.isFeatured,isFeatured:!!article.isFeatured,deckPriority:article.deckPriority??999,
     estimatedReadTime:Math.max(1,Math.ceil(words(JSON.stringify(f))/220)), raw_input:article.raw_input||'',
   };

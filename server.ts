@@ -16,6 +16,7 @@ import {
   EditorialError,
   EditorialService,
   classifyEditorialFailure,
+  defaultEditorialIdentity,
   editorialProcessingStaleAfterMs,
   firestoreSafeIngestStory,
   safeEditorialFailureMessage,
@@ -571,20 +572,26 @@ const firestoreEditorialStore: EditorialStore = {
   async publish(queueId, post) {
     const db = getFirestore();
     const queueReference = db.collection("editorial_queue").doc(queueId);
-    const postReference = db.collection("posts").doc();
+    let targetPostId = "";
     try {
       await db.runTransaction(async (transaction) => {
         const queue = await transaction.get(queueReference);
         if (!queue.exists) throw new EditorialError("not_found", "Editorial item not found.", 404);
-        if (queue.data()?.status !== "approved") {
-          throw new EditorialError("publish_conflict", "Editorial approval changed. Reload and try again.", 409);
-        }
+        const data = queue.data() || {};
+        const existingPostId = data.publishedArticleId;
+        const postReference = existingPostId
+          ? db.collection("posts").doc(existingPostId)
+          : db.collection("posts").doc();
+        targetPostId = postReference.id;
+
+
+
         transaction.set(postReference, firestoreSafeValue({
           ...post,
           createdAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
           publishedAt: FieldValue.serverTimestamp(),
-        }));
+        }), { merge: true });
         transaction.update(queueReference, firestoreSafeValue({
           status: "published",
           publishedArticleId: postReference.id,
@@ -597,8 +604,13 @@ const firestoreEditorialStore: EditorialStore = {
       logFirestoreWriteFailure("publish", queueId, error);
       throw error;
     }
-    console.info("[editorial] publish succeeded", { queueId, articleId: postReference.id });
-    return postReference.id;
+    console.info("[editorial] publish succeeded", { queueId, articleId: targetPostId });
+    if (targetPostId) {
+      void processLocalization(targetPostId).catch((locErr: any) => {
+        console.warn("[editorial] background localization notice", { articleId: targetPostId, error: locErr?.message });
+      });
+    }
+    return targetPostId;
   },
 };
 
@@ -608,8 +620,10 @@ const editorialService = new EditorialService(
     generateArticle(sourceText(story), story.domain, feedback),
   configuredDomains(),
   2,
-  false,
+  true,
   (story) => resolveArticleImage(story),
+  true,
+  defaultEditorialIdentity,
 );
 
 function triggerEditorialWorker(queueId: string | undefined, operation: string) {
@@ -839,6 +853,7 @@ app.get("/api/editorial-worker", requireEditorialWorker, async (_req, res) => {
     return res.json({
       ok: true,
       processed: results.length,
+      published: results.filter((item) => item.status === "published").length,
       ready: results.filter((item) => item.status === "ready_for_review").length,
       failed: results.filter((item) => item.status === "failed").length,
       queueIds: results.map((item) => item.id),
@@ -999,6 +1014,56 @@ app.post("/api/editorial/:id/publish", requireAuth, requireStaff, async (req: Au
     return res.json({ item });
   } catch (error) {
     console.warn("[editorial] publish failed", { queueId: String(req.params.id) });
+    return editorialFailure(res, error);
+  }
+});
+
+app.post("/api/editorial/backlog-release", requireAuth, requireStaff, async (_req, res) => {
+  try {
+    const items = await firestoreEditorialStore.listRecent(200);
+    let totalEvaluated = 0;
+    let newlyPublished = 0;
+    let alreadyPublished = 0;
+    let failed = 0;
+    const results: Array<{ id: string; title: string; status: string; articleId?: string; reason?: string }> = [];
+
+    for (const item of items) {
+      totalEvaluated += 1;
+      if (item.duplicate) continue;
+      if (item.status === "published" && item.publishedArticleId) {
+        alreadyPublished += 1;
+        continue;
+      }
+      if (!item.generatedArticle) continue;
+      try {
+        const published = await editorialService.publish(item.id, defaultEditorialIdentity);
+        newlyPublished += 1;
+        results.push({
+          id: item.id,
+          title: item.source.title,
+          status: published.status,
+          articleId: published.publishedArticleId || undefined,
+        });
+      } catch (err: any) {
+        failed += 1;
+        results.push({
+          id: item.id,
+          title: item.source.title,
+          status: "failed",
+          reason: err?.message || String(err),
+        });
+      }
+    }
+
+    return res.json({
+      ok: true,
+      totalEvaluated,
+      newlyPublished,
+      alreadyPublished,
+      failed,
+      results,
+    });
+  } catch (error) {
     return editorialFailure(res, error);
   }
 });

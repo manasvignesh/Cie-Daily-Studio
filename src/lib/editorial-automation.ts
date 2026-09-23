@@ -84,6 +84,12 @@ export type EditorialIdentity = {
   avatar?: string;
 };
 
+export const defaultEditorialIdentity: EditorialIdentity = {
+  uid: 'system-editorial-bot',
+  name: 'Breakpoint Editorial Desk',
+  email: 'editorial@breakpoint.news',
+};
+
 export class EditorialError extends Error {
   constructor(
     public readonly code: string,
@@ -300,8 +306,6 @@ export function findDuplicate(
     const contextScore = tokenSimilarity(storyContextTokens, otherContextTokens);
     const sameLocation = story.location && item.source.location &&
       tokenSimilarity(meaningfulTokens(story.location), meaningfulTokens(item.source.location)) > 0;
-    // A likely duplicate needs multiple shared event/entity terms plus context;
-    // headline word overlap alone is intentionally insufficient.
     if (sharedTitle.length < 2 || titleScore < 0.45 || contextScore < 0.2) continue;
     const score = Math.min(0.99, titleScore * 0.55 + contextScore * 0.35 + (sameLocation ? 0.1 : 0));
     if (score >= 0.55 && (!best || score > best.score)) {
@@ -343,6 +347,11 @@ function articleFromGeneration(
     quick_brief: generated.quick_brief,
     full_article: generated.full_article,
     raw_input: sourceText(story),
+    sourceName: story.sourceName,
+    sourceUrl: story.sourceUrl,
+    originalPublisher: story.sourceName,
+    originalSourceUrl: story.sourceUrl,
+    sourceType: 'third_party',
     ...(story.imageUrl ? { imageUrl: story.imageUrl } : {}),
     mediaUrls: story.imageUrl ? [story.imageUrl] : [],
   };
@@ -370,6 +379,8 @@ export class EditorialService {
     private readonly maxGenerationAttempts = 2,
     private readonly processOnIngest = true,
     private readonly imageResolver?: EditorialImageResolver,
+    private readonly autoPublish = true,
+    private readonly defaultIdentity: EditorialIdentity = defaultEditorialIdentity,
   ) {}
 
   domains() {
@@ -447,14 +458,17 @@ export class EditorialService {
           failureReason: null,
           duplicate: null,
         });
+        if (this.autoPublish) {
+          try {
+            return await this.publish(id, this.defaultIdentity);
+          } catch (pubErr) {
+            console.warn('[editorial] auto-publish warning', pubErr);
+          }
+        }
         return (await this.store.get(id))!;
       } catch (error) {
         lastFailure = safeFailure(error);
         feedback = [lastFailure];
-        // A provider deadline is already bounded to leave time for the
-        // terminal Firestore write. Do not immediately spend another full
-        // generation attempt in the same Vercel invocation; the next worker
-        // retry/manual regenerate can safely try again.
         if (classifyEditorialFailure(error) === 'timeout') break;
       }
     }
@@ -541,10 +555,10 @@ export class EditorialService {
     return (await this.store.get(id))!;
   }
 
-  async publish(id: string, identity: EditorialIdentity) {
+  async publish(id: string, identity: EditorialIdentity = this.defaultIdentity) {
     const item = await this.required(id);
     if (item.status === 'published' && item.publishedArticleId) return item;
-    if (item.status !== 'ready_for_review' || !item.generatedArticle) {
+    if (!item.generatedArticle) {
       throw new EditorialError('not_ready', 'This story is not ready to publish.', 409);
     }
     const errors = articleValidationErrors(item.generatedArticle);
@@ -557,6 +571,9 @@ export class EditorialService {
         ...toPublishedPost(item.generatedArticle, identity),
         sourceUrl: item.source.sourceUrl,
         sourceName: item.source.sourceName,
+        originalPublisher: item.source.sourceName || 'Breakpoint Editorial',
+        originalSourceUrl: item.source.sourceUrl || '',
+        sourceType: 'third_party',
         sourcePublishedAt: item.source.publishedAt,
         editorialQueueId: id,
       };

@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.ciedaily.app",
+      "sha256_cert_fingerprints": [
+        "46:D8:87:EE:70:9A:F0:C6:27:AE:88:76:C8:30:73:79:4A:71:11:9B:35:78:6F:21:05:4F:37:7F:51:D0:4A:2E"
+      ]
+    }
+  }
+]

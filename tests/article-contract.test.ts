@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { emptyFullArticle, emptyQuickBrief, toPublishedPost, validateArticle } from '../src/lib/article-contract';
+import { emptyFullArticle, emptyQuickBrief, toPublishedPost, validateArticle, validateAttribution } from '../src/lib/article-contract';
 
 test('rejects malformed and duplicated article representations',()=>{
   const quick={...emptyQuickBrief(),category:'Tech',headline:'A real headline here',quick_summary:'same summary words repeated enough to look acceptable but still deliberately identical across both article representations for this contract check',three_things_to_know:['One substantive fact here','Second substantive fact here','Third substantive fact here']};
@@ -8,6 +8,20 @@ test('rejects malformed and duplicated article representations',()=>{
   const issues=validateArticle({quick_brief:quick,full_article:full});
   assert(issues.some(i=>i.path==='content'));
   assert(issues.some(i=>i.path==='full_article.explore_sections'));
+});
+
+test('external publishing attribution requires publisher, date and source URL',()=>{
+  const complete:any={sourceType:'external',originalPublisher:'Reuters',originalSourceUrl:'https://reuters.com/story',publishedAt:'2026-09-22T15:10:00Z'};
+  assert.equal(validateAttribution(complete).length,0);
+  assert(validateAttribution({...complete,originalPublisher:''}).some(i=>i.path==='originalPublisher'));
+  assert(validateAttribution({...complete,originalSourceUrl:''}).some(i=>i.path==='originalSourceUrl'));
+  assert(validateAttribution({...complete,publishedAt:''}).some(i=>i.path==='publishedAt'));
+});
+
+test('original Breakpoint attribution requires an editorial owner, not an external URL',()=>{
+  const issues=validateAttribution({sourceType:'original',publishedAt:'2026-09-22T15:10:00Z'} as any);
+  assert(issues.some(i=>i.path==='authorName'));
+  assert(!issues.some(i=>i.path==='originalSourceUrl'));
 });
 
 test('publisher emits one mobile-compatible schema-v2 post',()=>{
