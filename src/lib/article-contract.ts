@@ -57,7 +57,7 @@ export function validateAttribution(article: Partial<Article>): ValidationIssue[
 export function toPublishedPost(article: Article, identity:{uid:string;name:string;email:string;avatar?:string}) {
   const q=article.quick_brief, f=article.full_article;
   const image = article.imageUrl || article.mediaUrls?.[0] || 'https://images.unsplash.com/photo-1585829365295-ab7cd400c167?w=1200&auto=format&fit=crop&q=80';
-  const sourceType = article.sourceType || 'third_party';
+  const sourceType = article.sourceType || 'external';
   const isOriginal = sourceType === 'original';
   const originalPublisher = isOriginal ? 'Breakpoint' : (article.originalPublisher || article.sourceName || 'Breakpoint Editorial');
   const originalSourceUrl = isOriginal ? '' : (article.originalSourceUrl || article.sourceUrl || '');

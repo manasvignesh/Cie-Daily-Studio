@@ -351,7 +351,7 @@ function articleFromGeneration(
     sourceUrl: story.sourceUrl,
     originalPublisher: story.sourceName,
     originalSourceUrl: story.sourceUrl,
-    sourceType: 'third_party',
+    sourceType: 'external',
     ...(story.imageUrl ? { imageUrl: story.imageUrl } : {}),
     mediaUrls: story.imageUrl ? [story.imageUrl] : [],
   };
@@ -573,7 +573,7 @@ export class EditorialService {
         sourceName: item.source.sourceName,
         originalPublisher: item.source.sourceName || 'Breakpoint Editorial',
         originalSourceUrl: item.source.sourceUrl || '',
-        sourceType: 'third_party',
+        sourceType: 'external',
         sourcePublishedAt: item.source.publishedAt,
         editorialQueueId: id,
       };
