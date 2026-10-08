@@ -5,7 +5,7 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch:
   workflow_run:
-    workflows: ["CIE Daily editorial ingest"]
+    workflows: ["CIE Daily editorial ingest", "CIE Daily feed ingest"]
     types: [completed]
 
 permissions:
