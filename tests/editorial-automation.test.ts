@@ -194,6 +194,7 @@ test('sample ingestion automatically publishes the canonical schema', async () =
   assert.deepEqual(post.quick_brief, generated.quick_brief);
   assert.deepEqual(post.full_article, generated.full_article);
   assert.equal(post.sourceUrl, story.sourceUrl);
+  assert.equal(post.publishedAt, story.publishedAt);
 });
 
 test('malformed payload is rejected before queue creation', async () => {

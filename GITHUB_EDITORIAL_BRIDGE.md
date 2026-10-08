@@ -72,6 +72,12 @@ Submit at most ten stories per issue. Domains are `Technology`, `Startups`,
 `AI & ML`, `Science`, `Engineering`, `India`, or `Business`. Use only verified
 HTTP(S) URLs and source-supported facts.
 
+The bridge also accepts case variations and known research-task labels
+(`Coding & Developer Technology`, `Startups & Business`, and
+`Engineering & Emerging Tech`). For slash-separated labels, all components must
+be recognized; the first is the primary category sent to the backend. Unknown
+labels still fail validation. Prefer one canonical domain in new submissions.
+
 ## What the Action does
 
 - Validates title, JSON, batch size, URLs, dates, domains, summaries, and facts.
@@ -102,6 +108,8 @@ and stops at `ready_for_review`.
 
 For a previously created issue, use **Actions -> CIE Daily editorial ingest ->
 Run workflow** and enter its issue number.
+The retry retrieves the current title and body from that labeled issue, so a
+corrected submission does not need to be copied into a new issue.
 
 ## Hourly ChatGPT scheduled-task prompt
 

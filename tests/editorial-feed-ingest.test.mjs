@@ -1,0 +1,9 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { parseFeed, recentStories, submitStories } from "../scripts/editorial-feed-ingest.mjs";
+
+const feed = { sourceName: "Example News", domain: "Technology" };
+const xml = `<rss><channel><item><title>New engineering breakthrough</title><link>https://example.com/story?id=1</link><pubDate>Wed, 08 Oct 2026 05:00:00 GMT</pubDate><description><![CDATA[Researchers reported a new engineering breakthrough after completing a controlled test.]]></description></item></channel></rss>`;
+test("parses source-linked RSS facts into the canonical ingest shape", () => { const stories = parseFeed(xml, feed); assert.equal(stories.length, 1); assert.equal(stories[0].sourceName, "Example News"); assert.equal(stories[0].domain, "Technology"); assert.equal(stories[0].keyFacts.length, 2); assert.match(stories[0].sourceUrl, /^https:\/\/example\.com/); });
+test("drops stale and future feed entries", () => { const now = Date.parse("2026-10-08T06:00:00Z"); const items = [{ publishedAt: "2026-10-07T06:00:00Z" }, { publishedAt: "2026-10-06T05:59:00Z" }, { publishedAt: "2026-10-08T07:00:00Z" }]; assert.deepEqual(recentStories(items, now, 36 * 60 * 60 * 1000), [items[0]]); });
+test("submits one canonical batch and keeps credentials out of the payload", async () => { let request; const result = await submitStories([{ title: "A verified story", sourceUrl: "https://example.com", sourceName: "Example", publishedAt: "2026-10-08T05:00:00Z", domain: "Technology", summary: "A source-grounded summary that is long enough for the queue.", keyFacts: ["Fact one", "Fact two"] }], "secret", async (url, init) => { request = { url, init }; return new Response(JSON.stringify({ results: [{ ok: true, id: "queue-1" }] }), { status: 201 }); }); assert.equal(result.submitted, 1); assert.equal(request.init.headers.Authorization, "Bearer secret"); assert.equal(JSON.parse(request.init.body).stories.length, 1); });

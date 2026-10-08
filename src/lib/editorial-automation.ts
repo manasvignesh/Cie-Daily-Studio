@@ -575,6 +575,7 @@ export class EditorialService {
         originalSourceUrl: item.source.sourceUrl || '',
         sourceType: 'external',
         sourcePublishedAt: item.source.publishedAt,
+        publishedAt: item.source.publishedAt,
         editorialQueueId: id,
       };
       const publishedArticleId = await this.store.publish(id, post);

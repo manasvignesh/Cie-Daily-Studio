@@ -16,6 +16,7 @@ test('external publishing attribution requires publisher, date and source URL',(
   assert(validateAttribution({...complete,originalPublisher:''}).some(i=>i.path==='originalPublisher'));
   assert(validateAttribution({...complete,originalSourceUrl:''}).some(i=>i.path==='originalSourceUrl'));
   assert(validateAttribution({...complete,publishedAt:''}).some(i=>i.path==='publishedAt'));
+  assert.equal(validateAttribution({...complete,publishedAt:'',sourcePublishedAt:'2026-09-22T15:10:00Z'} as any).some(i=>i.path==='publishedAt'),false);
 });
 
 test('original Breakpoint attribution requires an editorial owner, not an external URL',()=>{

@@ -14,6 +14,34 @@ const ALLOWED_DOMAINS = new Set([
 
 const cleanText = (value) => (typeof value === "string" ? value.trim() : "");
 
+// The research task sometimes emits a primary domain plus a descriptive
+// secondary domain. Preserve its primary classification, but never guess for
+// unknown categories or relax the backend's canonical-domain contract.
+const DOMAIN_ALIASES = new Map([
+  ...[...ALLOWED_DOMAINS].map((domain) => [domain.toLowerCase(), domain]),
+  ["coding & developer technology", "Technology"],
+  ["startups & business", "Startups"],
+  ["engineering & emerging tech", "Engineering"],
+]);
+
+export function normalizePayloadDomains(payload) {
+  if (!payload || typeof payload !== "object" || !Array.isArray(payload.stories))
+    return payload;
+  return {
+    ...payload,
+    stories: payload.stories.map((story) => {
+      if (!story || typeof story !== "object") return story;
+      const domains = cleanText(story.domain).split("/").map((domain) =>
+        DOMAIN_ALIASES.get(domain.trim().replace(/\s+/g, " ").toLowerCase()),
+      );
+      return {
+        ...story,
+        domain: domains.length && domains.every(Boolean) ? domains[0] : story.domain,
+      };
+    }),
+  };
+}
+
 export function parseIssueBody(rawBody) {
   const raw = cleanText(rawBody);
   if (!raw)
@@ -150,7 +178,7 @@ async function main() {
   let results = [];
   try {
     if (titleErrors.length) throw new Error(titleErrors.join(" "));
-    payload = parseIssueBody(process.env.ISSUE_BODY);
+    payload = normalizePayloadDomains(parseIssueBody(process.env.ISSUE_BODY));
     const validationErrors = validatePayload(payload);
     if (validationErrors.length) throw new Error(validationErrors.join(" "));
     results = await forwardToEditorialIngest(

@@ -28,12 +28,34 @@ jobs:
       - name: Check out bridge
         uses: actions/checkout@v4
 
+      - name: Load issue for manual retry
+        if: github.event_name == 'workflow_dispatch'
+        id: issue
+        uses: actions/github-script@v7
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+        with:
+          script: |
+            const issue_number = Number(process.env.ISSUE_NUMBER);
+            if (!Number.isSafeInteger(issue_number) || issue_number <= 0) {
+              throw new Error('issue_number must be a positive integer.');
+            }
+            const { data } = await github.rest.issues.get({
+              ...context.repo,
+              issue_number,
+            });
+            if (data.pull_request || !data.labels.some(label => label.name === 'cie-editorial-ingest')) {
+              throw new Error('Retry requires an issue labeled cie-editorial-ingest.');
+            }
+            core.setOutput('title', data.title);
+            core.setOutput('body', data.body || '');
+
       - name: Read and submit canonical issue JSON
         id: ingest
         continue-on-error: true
         env:
-          ISSUE_TITLE: ${{ github.event.issue.title || format('manual issue {0}', inputs.issue_number) }}
-          ISSUE_BODY: ${{ github.event.issue.body || '' }}
+          ISSUE_TITLE: ${{ steps.issue.outputs.title || github.event.issue.title }}
+          ISSUE_BODY: ${{ steps.issue.outputs.body || github.event.issue.body }}
           ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
           EDITORIAL_INGEST_SECRET: ${{ secrets.EDITORIAL_INGEST_SECRET }}
         run: node scripts/editorial-ingest-issue.mjs

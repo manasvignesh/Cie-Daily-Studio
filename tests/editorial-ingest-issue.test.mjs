@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   forwardToEditorialIngest,
+  normalizePayloadDomains,
   parseIssueBody,
   validateIssueTitle,
   validatePayload,
@@ -23,6 +24,30 @@ const story = {
   location: "India",
   imageUrl: "https://example.com/images/satellite.webp",
 };
+
+test("normalizes the rejected research categories without changing the source payload", () => {
+  for (const domain of [
+    "AI & ML / Coding & Developer Technology",
+    "AI & ML / Startups & Business",
+    "AI & ML / Engineering & Emerging Tech",
+    " ai & ml ",
+  ]) {
+    const input = { stories: [{ ...story, domain }] };
+    const normalized = normalizePayloadDomains(input);
+    assert.equal(normalized.stories[0].domain, "AI & ML");
+    assert.equal(input.stories[0].domain, domain);
+    assert.deepEqual(validatePayload(normalized), []);
+  }
+});
+
+test("does not silently accept unknown or incomplete composite categories", () => {
+  for (const domain of ["Unknown / Technology", "Technology / Unknown", "Technology /", ""]) {
+    const normalized = normalizePayloadDomains({ stories: [{ ...story, domain }] });
+    assert.ok(validatePayload(normalized).some((error) => error.includes(".domain")));
+  }
+  assert.equal(normalizePayloadDomains(null), null);
+  assert.deepEqual(normalizePayloadDomains({ stories: [null] }), { stories: [null] });
+});
 
 test("parses direct and fenced issue JSON", () => {
   assert.deepEqual(parseIssueBody(JSON.stringify({ stories: [story] })), {

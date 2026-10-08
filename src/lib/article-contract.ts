@@ -36,7 +36,7 @@ export function validateAttribution(article: Partial<Article>): ValidationIssue[
   const sourceType = String(article.sourceType || '').trim();
   const isOriginal = sourceType === 'original';
   if (!sourceType) out.push({level:'error',path:'sourceType',message:'Choose a source type.'});
-  const rawDate = article.publishedAt as any;
+  const rawDate = (article.publishedAt || article.sourcePublishedAt) as any;
   const date = rawDate?.toDate?.() || (rawDate ? new Date(String(rawDate)) : null);
   if (!date || Number.isNaN(date.getTime())) out.push({level:'error',path:'publishedAt',message:'Original publication date and time is required.'});
   if (isOriginal) {
@@ -59,8 +59,9 @@ export function toPublishedPost(article: Article, identity:{uid:string;name:stri
   const image = article.imageUrl || article.mediaUrls?.[0] || 'https://images.unsplash.com/photo-1585829365295-ab7cd400c167?w=1200&auto=format&fit=crop&q=80';
   const sourceType = article.sourceType || 'external';
   const isOriginal = sourceType === 'original';
-  const originalPublisher = isOriginal ? 'Breakpoint' : (article.originalPublisher || article.sourceName || 'Breakpoint Editorial');
+  const originalPublisher = isOriginal ? 'Breakpoint' : (article.originalPublisher || article.sourceName || '');
   const originalSourceUrl = isOriginal ? '' : (article.originalSourceUrl || article.sourceUrl || '');
+  const publishedAt = article.publishedAt || article.sourcePublishedAt;
   return {
     schema_version:2, status:'approved', category:'Article', articleCategory:q.category, title:q.headline,
     headline:q.headline, description:f.hook, hook:f.hook, quick_brief:q, full_article:f,
@@ -73,6 +74,7 @@ export function toPublishedPost(article: Article, identity:{uid:string;name:stri
     sourceUrl:originalSourceUrl,
     sourceType,
     breakpointEditor:article.breakpointEditor||'Breakpoint Editorial',
+    ...(publishedAt ? {publishedAt} : {}),
     likedBy:[],bookmarkedBy:[],likesCount:0,commentsCount:0,isTodaysDrop:!!article.isFeatured,isFeatured:!!article.isFeatured,deckPriority:article.deckPriority??999,
     estimatedReadTime:Math.max(1,Math.ceil(words(JSON.stringify(f))/220)), raw_input:article.raw_input||'',
   };
